@@ -227,3 +227,79 @@ def test_replacement_affects_only_selected_output():
 
     new_1x1_res = client.get(f"/api/download/{image_id}/square_1x1")
     assert len(new_1x1_res.content) == orig_1x1_len
+
+
+def test_invalid_manual_crop_rejection():
+    """Verify that manual crops with mismatched aspect ratios or invalid bounds are rejected with HTTP 422."""
+    img_bytes = create_sample_image("JPEG", (1200, 800))
+    upload_res = client.post("/api/upload", files={"file": ("crop_test.jpg", img_bytes, "image/jpeg")})
+    image_id = upload_res.json()["image_id"]
+    client.post("/api/convert", json={"image_id": image_id, "mode": "smart_crop"})
+
+    # Send wrong aspect ratio: square (1:1) requires width == height, but we send 600x200 (3:1)
+    wrong_ratio_res = client.post(
+        "/api/adjust-crop",
+        json={
+            "image_id": image_id,
+            "ratio": "square_1x1",
+            "crop_box": [100, 100, 700, 300]  # width=600, height=200 -> ratio 3.0 instead of 1.0
+        }
+    )
+    assert wrong_ratio_res.status_code == 422
+    assert "does not match target ratio" in wrong_ratio_res.json()["detail"].lower()
+
+    # Out of bounds coordinates: right > 1200
+    out_of_bounds_res = client.post(
+        "/api/adjust-crop",
+        json={
+            "image_id": image_id,
+            "ratio": "square_1x1",
+            "crop_box": [100, 100, 1500, 1500]
+        }
+    )
+    assert out_of_bounds_res.status_code == 422
+
+
+def test_ratio_source_isolation_endpoint():
+    """Verify that /api/ratio-source serves the replacement source for replaced ratios and master original for others."""
+    img_bytes = create_sample_image("JPEG", (800, 600), color=(10, 20, 30))
+    upload_res = client.post("/api/upload", files={"file": ("base.jpg", img_bytes, "image/jpeg")})
+    image_id = upload_res.json()["image_id"]
+    client.post("/api/convert", json={"image_id": image_id, "mode": "smart_crop"})
+
+    # Check initial source is base
+    src_res = client.get(f"/api/ratio-source/{image_id}/square_1x1")
+    assert src_res.status_code == 200
+
+    # Replace 16:9 with distinctive bright red image
+    rep_bytes = create_sample_image("JPEG", (1000, 500), color=(255, 0, 0))
+    client.post(
+        "/api/replace/landscape_16x9",
+        data={"image_id": image_id},
+        files={"file": ("rep.jpg", rep_bytes, "image/jpeg")}
+    )
+
+    # 16:9 ratio source is now the replacement
+    src_16x9 = client.get(f"/api/ratio-source/{image_id}/landscape_16x9")
+    assert src_16x9.status_code == 200
+    img_16x9 = Image.open(io.BytesIO(src_16x9.content))
+    assert img_16x9.size == (1000, 500)
+
+    # 1:1 ratio source remains the master
+    src_1x1 = client.get(f"/api/ratio-source/{image_id}/square_1x1")
+    assert src_1x1.status_code == 200
+    img_1x1 = Image.open(io.BytesIO(src_1x1.content))
+    assert img_1x1.size == (800, 600)
+
+
+def test_groq_vision_endpoint_fallback():
+    """Verify that /api/analyze handles absent/disabled Groq API gracefully without crashing."""
+    img_bytes = create_sample_image("JPEG", (600, 400))
+    upload_res = client.post("/api/upload", files={"file": ("test.jpg", img_bytes, "image/jpeg")})
+    image_id = upload_res.json()["image_id"]
+
+    res = client.get(f"/api/analyze/{image_id}")
+    assert res.status_code == 200
+    data = res.json()
+    assert "enabled" in data
+

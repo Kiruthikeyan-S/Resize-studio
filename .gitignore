@@ -1,0 +1,35 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.pytest_cache/
+
+# Virtual Environments
+venv/
+.venv/
+env/
+.env
+*.env
+
+# Operating System files
+.DS_Store
+Thumbs.db
+
+# Node & Frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+dist/
+.vite/
+frontend/.vite/
+
+# Runtime Storage & Uploads
+backend/storage/original/
+backend/storage/generated/
+storage/original/
+storage/generated/
+
+# Keep directory structure
+!backend/storage/original/.gitkeep
+!backend/storage/generated/.gitkeep

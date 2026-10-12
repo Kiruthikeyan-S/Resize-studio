@@ -3,7 +3,7 @@
 import os
 import uuid
 import re
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any, List
 from fastapi import UploadFile, HTTPException
 from PIL import Image
 
@@ -20,17 +20,46 @@ ALLOWED_MIME_TYPES = {
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
-SAFE_RATIO_PATTERN = re.compile(r"^[0-9]+x[0-9]+$|^[0-9]+_[0-9]+$|^[0-9]+:[0-9]+$")
+SAFE_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$")
+SAFE_RATIO_PATTERN = re.compile(r"^[a-zA-Z0-9_:]+$")
+SAFE_HEX_COLOR_PATTERN = re.compile(r"^#?[a-fA-F0-9]{6}$")
 
 
 def validate_file_size(file: UploadFile) -> None:
-    """Validate that the file does not exceed maximum upload size."""
+    """Validate that client-declared file size does not exceed maximum upload size."""
     if hasattr(file, "size") and file.size is not None:
         if file.size > MAX_UPLOAD_SIZE:
             raise HTTPException(
-                status_code=400,
+                status_code=413,
                 detail=f"File exceeds maximum allowed size of {MAX_UPLOAD_SIZE // (1024 * 1024)} MB."
             )
+
+
+def validate_stream_bytes(data: bytes) -> None:
+    """Validate that actual streamed byte length does not exceed maximum upload size."""
+    if len(data) > MAX_UPLOAD_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Uploaded data ({len(data) / (1024 * 1024):.1f}MB) exceeds 20MB limit."
+        )
+
+
+def validate_session_id(image_id: str) -> None:
+    """Validate that image_id is a valid hex uuid to prevent path traversal."""
+    clean = str(image_id).strip().lower()
+    if not SAFE_ID_PATTERN.match(clean):
+        raise HTTPException(status_code=400, detail="Invalid session identifier format.")
+
+
+def validate_hex_color(hex_str: str) -> str:
+    """Validate hexadecimal background color string."""
+    clean = hex_str.strip()
+    if not SAFE_HEX_COLOR_PATTERN.match(clean):
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid background color. Must be a 6-character hex code (e.g. #FFFFFF)."
+        )
+    return clean if clean.startswith("#") else f"#{clean}"
 
 
 def validate_image_content(file_path: str) -> Dict[str, Any]:
@@ -46,39 +75,35 @@ def validate_image_content(file_path: str) -> Dict[str, Any]:
     if file_size > MAX_UPLOAD_SIZE:
         os.remove(file_path)
         raise HTTPException(
-            status_code=400,
+            status_code=413,
             detail=f"File size ({file_size / (1024 * 1024):.1f}MB) exceeds 20MB limit."
         )
 
     try:
         with Image.open(file_path) as img:
-            # Check format
             format_name = (img.format or "").upper()
             if format_name not in ["JPEG", "PNG", "WEBP"]:
                 raise HTTPException(
-                    status_code=400,
+                    status_code=422,
                     detail=f"Unsupported image format: {format_name}. Only JPEG, PNG, and WebP are supported."
                 )
 
-            # Check pixel dimensions
             width, height = img.size
             total_pixels = width * height
             if total_pixels > MAX_DECODED_PIXELS:
                 raise HTTPException(
-                    status_code=400,
+                    status_code=422,
                     detail=f"Image resolution ({width}x{height}) is too large (max {MAX_DECODED_PIXELS} pixels)."
                 )
 
             if width < 10 or height < 10:
                 raise HTTPException(
-                    status_code=400,
+                    status_code=422,
                     detail="Image dimensions are too small (minimum 10x10 pixels)."
                 )
 
-            # Pillow verify checks file integrity without full decode
             img.verify()
 
-        # Re-open to read color mode and details (since verify closes the image or invalidates state)
         with Image.open(file_path) as img:
             color_mode = img.mode
             width, height = img.size
@@ -98,20 +123,16 @@ def validate_image_content(file_path: str) -> Dict[str, Any]:
     except Exception as e:
         if os.path.exists(file_path):
             os.remove(file_path)
-        raise HTTPException(
-            status_code=400,
-            detail=f"Corrupted or invalid image file: {str(e)}"
-        )
+        raise HTTPException(status_code=422, detail="Corrupted or unreadable image file.")
 
 
 def generate_safe_id() -> str:
-    """Generate a collision-free, safe image ID."""
+    """Generate a clean random 32-character hexadecimal UUID string."""
     return uuid.uuid4().hex
 
 
 def sanitize_filename(filename: str) -> str:
-    """Strip dangerous characters to prevent path traversal."""
+    """Remove unsafe characters and path traversal attempts from filenames."""
     basename = os.path.basename(filename)
-    # Only keep alphanumeric, dash, underscore, dot
-    clean_name = re.sub(r"[^\w\.-]", "_", basename)
-    return clean_name or "uploaded_image"
+    clean = re.sub(r"[^a-zA-Z0-9_\-\.]", "_", basename)
+    return clean[:100] if clean else "image.jpg"

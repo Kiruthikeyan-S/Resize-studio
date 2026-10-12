@@ -1,4 +1,4 @@
-"""Image processor pipeline integrating validation, Professional Smart Crop, Safe Fit, and quality management."""
+"""Image processor pipeline integrating validation, subject framing, lossless upload caching, and quality management."""
 
 import os
 import json
@@ -13,6 +13,7 @@ from services.crop_engine import (
     process_image_for_ratio,
     calculate_crop_window,
     detect_saliency_center,
+    detect_saliency_bbox,
 )
 from services.quality_manager import (
     fix_exif_orientation,
@@ -75,32 +76,40 @@ def save_original_image(
     extension: str
 ) -> Tuple[str, Dict[str, Any]]:
     """
-    Save uploaded original image file, apply EXIF rotation, and extract metadata.
+    Save uploaded original file completely untouched (no lossy re-encoding).
+    Creates a normalized lossless working copy (PNG/RGB) with EXIF orientation corrected
+    so that all subsequent ratio crops export directly from master quality without degradation.
     """
     orig_session_dir, _ = get_image_session_dirs(image_id)
     os.makedirs(orig_session_dir, exist_ok=True)
 
-    file_path = os.path.join(orig_session_dir, f"original{extension}")
-    with open(file_path, "wb") as f:
+    # 1. Save uploaded file bit-for-bit unchanged
+    raw_path = os.path.join(orig_session_dir, f"raw{extension}")
+    with open(raw_path, "wb") as f:
         f.write(file_bytes)
 
-    with Image.open(file_path) as img:
+    # 2. Inspect with Pillow and generate normalized working copy
+    working_path = os.path.join(orig_session_dir, "working.png")
+    with Image.open(raw_path) as img:
         img_fixed = fix_exif_orientation(img)
         img_fixed = ensure_srgb_profile(img_fixed)
         width, height = img_fixed.size
         mode = img_fixed.mode
         format_name = (img.format or extension.lstrip(".")).upper()
-        img_fixed.save(file_path, format=img.format or "JPEG", quality=95)
+        # Save working copy as lossless PNG
+        img_fixed.save(working_path, format="PNG")
 
     meta = {
         "image_id": image_id,
         "original_filename": original_filename,
         "width": width,
         "height": height,
-        "file_size": os.path.getsize(file_path),
+        "file_size": len(file_bytes),
         "format": format_name,
         "mode": mode,
-        "file_path": file_path,
+        "file_path": working_path,
+        "raw_path": raw_path,
+        "version": 1,
         "created_at": time.time(),
         "is_low_res": width < 1600 or height < 1200,
     }
@@ -109,7 +118,7 @@ def save_original_image(
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
-    return file_path, meta
+    return working_path, meta
 
 
 def get_original_metadata(image_id: str) -> Optional[Dict[str, Any]]:
@@ -123,11 +132,50 @@ def get_original_metadata(image_id: str) -> Optional[Dict[str, Any]]:
 
 
 def get_original_file_path(image_id: str) -> Optional[str]:
-    """Retrieve original image file path."""
+    """Retrieve working master image file path."""
     meta = get_original_metadata(image_id)
     if meta and "file_path" in meta and os.path.exists(meta["file_path"]):
         return meta["file_path"]
+    # Fallback check for raw or legacy original.*
+    orig_session_dir, _ = get_image_session_dirs(image_id)
+    for candidate in ["working.png", "original.jpg", "original.png", "original.webp"]:
+        p = os.path.join(orig_session_dir, candidate)
+        if os.path.exists(p):
+            return p
     return None
+
+
+def get_ratio_source_info(image_id: str, ratio_safe_key: str) -> Tuple[str, str, int, int]:
+    """
+    Retrieve active source file path, source preview URL, and dimensions for a specific ratio.
+    If an individual replacement was uploaded, returns the replacement source.
+    Otherwise returns the session master source.
+    Returns: (source_path, source_url, source_width, source_height)
+    """
+    orig_meta = get_original_metadata(image_id) or {}
+    master_path = get_original_file_path(image_id) or ""
+    master_w = orig_meta.get("width", 1920)
+    master_h = orig_meta.get("height", 1080)
+
+    # Check manifest for ratio-specific source override
+    _, gen_session_dir = get_image_session_dirs(image_id)
+    manifest_path = os.path.join(gen_session_dir, "metadata.json")
+    if os.path.exists(manifest_path):
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+            for out in manifest.get("outputs", []):
+                if out.get("safe_key") == ratio_safe_key:
+                    rep_path = out.get("source_image_path")
+                    if rep_path and os.path.exists(rep_path):
+                        with Image.open(rep_path) as r_img:
+                            rw, rh = r_img.size
+                        rep_url = f"/api/ratio-source/{image_id}/{ratio_safe_key}"
+                        return rep_path, rep_url, rw, rh
+        except Exception:
+            pass
+
+    return master_path, f"/api/original/{image_id}", master_w, master_h
 
 
 def generate_all_ratios(
@@ -135,22 +183,21 @@ def generate_all_ratios(
     mode: str = "smart_crop",
     export_format: str = "jpeg",
     quality: int = 90,
-    bg_color_hex: str = "#18181B",
+    bg_color_hex: str = "#F8FAFC",
     is_transparent: bool = False,
     sharpen: bool = False,
     denoise: bool = False,
     custom_crops: Optional[Dict[str, Tuple[int, int, int, int]]] = None
 ) -> Dict[str, Any]:
     """
-    Generate all 5 predefined aspect ratio images.
-    Default mode: 'smart_crop' (Professional full-frame crop, subject-centered, no blur).
-    Alternative mode: 'safe_fit' (Preserves full image with clean solid background).
+    Generate all 5 predefined aspect ratio images from master working copy.
     """
     orig_path = get_original_file_path(image_id)
     if not orig_path:
         raise FileNotFoundError(f"Original image not found for session {image_id}")
 
     orig_meta = get_original_metadata(image_id) or {}
+    orig_version = orig_meta.get("version", 1)
     _, gen_session_dir = get_image_session_dirs(image_id)
     os.makedirs(gen_session_dir, exist_ok=True)
 
@@ -171,7 +218,7 @@ def generate_all_ratios(
             legacy_key = config["legacy_key"]
             manual_crop = custom_crops.get(ratio_key) or custom_crops.get(safe_key) or custom_crops.get(legacy_key)
 
-            processed, crop_box = process_image_for_ratio(
+            processed, crop_box, fit_info = process_image_for_ratio(
                 img=source_img,
                 target_config=config,
                 mode=mode,
@@ -199,12 +246,17 @@ def generate_all_ratios(
             out_filename = f"image_{safe_key}.{ext}"
             out_path = os.path.join(gen_session_dir, out_filename)
 
-            # Save full resolution output
+            # Save full resolution output with high quality
             save_kwargs = {}
-            if export_format in ["jpeg", "webp"]:
+            if export_format == "jpeg":
                 save_kwargs["quality"] = max(1, min(100, quality))
-            if export_format == "png":
+                save_kwargs["subsampling"] = 0  # 4:4:4 full chroma preservation
+            elif export_format == "webp":
+                save_kwargs["quality"] = max(1, min(100, quality))
+                save_kwargs["method"] = 6
+            elif export_format == "png":
                 save_kwargs["compress_level"] = 6
+
             final_img.save(out_path, format=export_format.upper(), **save_kwargs)
 
             # Legacy alias copy (e.g. image_1x1.jpg)
@@ -213,15 +265,15 @@ def generate_all_ratios(
             if legacy_path != out_path:
                 shutil.copyfile(out_path, legacy_path)
 
-            # Optimized preview thumbnail (max 600px)
-            thumb_scale = min(600 / config["width"], 600 / config["height"], 1.0)
+            # High-fidelity preview thumbnail (max 640px)
+            thumb_scale = min(640 / config["width"], 640 / config["height"], 1.0)
             thumb_w = int(round(config["width"] * thumb_scale))
             thumb_h = int(round(config["height"] * thumb_scale))
             thumb_img = final_img.resize((thumb_w, thumb_h), resample=Image.Resampling.LANCZOS)
 
             thumb_filename = f"thumb_{safe_key}.webp"
             thumb_path = os.path.join(gen_session_dir, thumb_filename)
-            thumb_img.save(thumb_path, format="WEBP", quality=82)
+            thumb_img.save(thumb_path, format="WEBP", quality=88)
 
             legacy_thumb_path = os.path.join(gen_session_dir, f"thumb_{legacy_key}.webp")
             if legacy_thumb_path != thumb_path:
@@ -232,8 +284,9 @@ def generate_all_ratios(
             # Determine whether edge content was trimmed
             crop_w = crop_box[2] - crop_box[0]
             crop_h = crop_box[3] - crop_box[1]
-            edges_trimmed = (crop_w < orig_w * 0.85) or (crop_h < orig_h * 0.85)
+            edges_trimmed = (crop_w < orig_w * 0.90) or (crop_h < orig_h * 0.90)
 
+            version = 1
             results.append({
                 "ratio_key": ratio_key,
                 "safe_key": safe_key,
@@ -245,11 +298,17 @@ def generate_all_ratios(
                 "file_name": out_filename,
                 "file_size": file_size,
                 "file_path": out_path,
-                "preview_url": f"/api/preview/{image_id}/{safe_key}",
+                "version": version,
+                "preview_url": f"/api/preview/{image_id}/{safe_key}?v={version}",
                 "download_url": f"/api/download/{image_id}/{safe_key}",
+                "source_url": f"/api/original/{image_id}",
+                "source_width": orig_w,
+                "source_height": orig_h,
+                "source_image_path": orig_path,
                 "crop_box": list(crop_box),
                 "mode": mode,
                 "edges_trimmed": edges_trimmed and mode == "smart_crop",
+                "fit_info": fit_info,
             })
 
     session_data = {
@@ -286,6 +345,7 @@ def regenerate_single_ratio(
 ) -> Dict[str, Any]:
     """
     Regenerate a single ratio output without affecting the other four outputs.
+    Increments ratio version for stable preview cache invalidation.
     """
     _, gen_session_dir = get_image_session_dirs(image_id)
     manifest_path = os.path.join(gen_session_dir, "metadata.json")
@@ -298,7 +358,7 @@ def regenerate_single_ratio(
     export_format = session_data.get("export_format", "jpeg")
     quality = session_data.get("quality", 90)
     proc_mode = mode or session_data.get("mode", "smart_crop")
-    proc_bg_color = bg_color_hex or session_data.get("bg_color_hex", "#18181B")
+    proc_bg_color = bg_color_hex or session_data.get("bg_color_hex", "#F8FAFC")
     proc_transparent = is_transparent if is_transparent is not None else session_data.get("is_transparent", False)
     sharpen = session_data.get("sharpen", False)
     denoise = session_data.get("denoise", False)
@@ -307,18 +367,36 @@ def regenerate_single_ratio(
     if not target_config:
         raise ValueError(f"Invalid ratio identifier: {ratio_safe_key}")
 
-    img_path = source_image_path or get_original_file_path(image_id)
+    # Find existing entry for this ratio to retain or update its specific source
+    existing_entry = None
+    for out in session_data.get("outputs", []):
+        if out.get("safe_key") == target_config["safe_key"] or out.get("legacy_key") == target_config["legacy_key"]:
+            existing_entry = out
+            break
+
+    # Determine source path
+    if source_image_path:
+        img_path = source_image_path
+        is_custom_source = True
+    elif existing_entry and existing_entry.get("source_image_path") and os.path.exists(existing_entry["source_image_path"]):
+        img_path = existing_entry["source_image_path"]
+        is_custom_source = img_path != get_original_file_path(image_id)
+    else:
+        img_path = get_original_file_path(image_id)
+        is_custom_source = False
+
     if not img_path or not os.path.exists(img_path):
         raise FileNotFoundError("Source image for ratio not found")
 
     ext = "jpg" if export_format == "jpeg" else export_format
+    current_version = (existing_entry.get("version", 1) if existing_entry else 1) + 1
 
     with Image.open(img_path) as source_img:
         source_img = fix_exif_orientation(source_img)
         source_img = ensure_srgb_profile(source_img)
         orig_w, orig_h = source_img.size
 
-        processed, crop_box = process_image_for_ratio(
+        processed, crop_box, fit_info = process_image_for_ratio(
             img=source_img,
             target_config=target_config,
             mode=proc_mode,
@@ -345,24 +423,29 @@ def regenerate_single_ratio(
         out_path = os.path.join(gen_session_dir, out_filename)
 
         save_kwargs = {}
-        if export_format in ["jpeg", "webp"]:
+        if export_format == "jpeg":
             save_kwargs["quality"] = max(1, min(100, quality))
-        if export_format == "png":
+            save_kwargs["subsampling"] = 0
+        elif export_format == "webp":
+            save_kwargs["quality"] = max(1, min(100, quality))
+            save_kwargs["method"] = 6
+        elif export_format == "png":
             save_kwargs["compress_level"] = 6
+
         final_img.save(out_path, format=export_format.upper(), **save_kwargs)
 
         legacy_path = os.path.join(gen_session_dir, f"image_{target_config['legacy_key']}.{ext}")
         if legacy_path != out_path:
             shutil.copyfile(out_path, legacy_path)
 
-        thumb_scale = min(600 / target_config["width"], 600 / target_config["height"], 1.0)
+        thumb_scale = min(640 / target_config["width"], 640 / target_config["height"], 1.0)
         thumb_w = int(round(target_config["width"] * thumb_scale))
         thumb_h = int(round(target_config["height"] * thumb_scale))
         thumb_img = final_img.resize((thumb_w, thumb_h), resample=Image.Resampling.LANCZOS)
 
         thumb_filename = f"thumb_{target_config['safe_key']}.webp"
         thumb_path = os.path.join(gen_session_dir, thumb_filename)
-        thumb_img.save(thumb_path, format="WEBP", quality=82)
+        thumb_img.save(thumb_path, format="WEBP", quality=88)
 
         legacy_thumb_path = os.path.join(gen_session_dir, f"thumb_{target_config['legacy_key']}.webp")
         if legacy_thumb_path != thumb_path:
@@ -372,7 +455,13 @@ def regenerate_single_ratio(
 
         crop_w = crop_box[2] - crop_box[0]
         crop_h = crop_box[3] - crop_box[1]
-        edges_trimmed = (crop_w < orig_w * 0.85) or (crop_h < orig_h * 0.85)
+        edges_trimmed = (crop_w < orig_w * 0.90) or (crop_h < orig_h * 0.90)
+
+        source_url = (
+            f"/api/ratio-source/{image_id}/{target_config['safe_key']}?v={current_version}"
+            if is_custom_source
+            else f"/api/original/{image_id}"
+        )
 
         output_entry = {
             "ratio_key": target_config["ratio_key"],
@@ -385,14 +474,20 @@ def regenerate_single_ratio(
             "file_name": out_filename,
             "file_size": file_size,
             "file_path": out_path,
-            "preview_url": f"/api/preview/{image_id}/{target_config['safe_key']}",
+            "version": current_version,
+            "preview_url": f"/api/preview/{image_id}/{target_config['safe_key']}?v={current_version}",
             "download_url": f"/api/download/{image_id}/{target_config['safe_key']}",
+            "source_url": source_url,
+            "source_width": orig_w,
+            "source_height": orig_h,
+            "source_image_path": img_path,
             "crop_box": list(crop_box),
             "mode": proc_mode,
             "edges_trimmed": edges_trimmed and proc_mode == "smart_crop",
+            "fit_info": fit_info,
         }
 
-    # Update manifest
+    # Update manifest atomically
     outputs = session_data.get("outputs", [])
     updated = False
     for i, out in enumerate(outputs):

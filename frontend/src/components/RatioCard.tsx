@@ -104,7 +104,7 @@ export const RatioCard: React.FC<RatioCardProps> = ({
         )}
 
         <img
-          src={`${item.preview_url}?t=${Date.now()}`}
+          src={item.preview_url}
           alt={item.name}
           onLoad={() => setImageLoaded(true)}
           className="max-h-full max-w-full object-contain mx-auto my-auto rounded-lg shadow-sm transition-transform duration-200 group-hover/preview:scale-[1.02]"
@@ -119,9 +119,28 @@ export const RatioCard: React.FC<RatioCardProps> = ({
         </div>
       </div>
 
-      {/* Trimmed Edges Notice if applicable */}
-      {item.edges_trimmed && (
-        <div className="px-3 py-1.5 bg-violet-50/80 border-t border-slate-100 flex items-center justify-between text-[11px] text-violet-800 font-medium">
+      {/* Subject boundary & trimmed edges notice if applicable */}
+      {item.fit_info && !item.fit_info.fits_completely && item.mode === 'smart_crop' ? (
+        <div className="px-3 py-1.5 bg-amber-50 border-t border-amber-200/60 flex items-center justify-between text-[11px] text-amber-900 font-medium">
+          <span className="flex items-center gap-1 truncate" title={item.fit_info.message}>
+            <Info className="w-3.5 h-3.5 shrink-0 text-amber-600" />
+            <span className="truncate">Subject trimmed on sides</span>
+          </span>
+          {onSwitchToSafeFit && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onSwitchToSafeFit();
+              }}
+              className="text-[10px] underline text-amber-800 hover:text-amber-950 font-semibold shrink-0 ml-1.5 cursor-pointer"
+            >
+              Show Entire Image
+            </button>
+          )}
+        </div>
+      ) : item.edges_trimmed && item.mode === 'smart_crop' ? (
+        <div className="px-3 py-1.5 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-700 font-medium">
           <span className="flex items-center gap-1 truncate">
             <Info className="w-3.5 h-3.5 shrink-0 text-violet-600" />
             <span>Full-frame focus active</span>
@@ -139,7 +158,7 @@ export const RatioCard: React.FC<RatioCardProps> = ({
             </button>
           )}
         </div>
-      )}
+      ) : null}
 
       {/* Card Footer */}
       <div className="p-3.5 border-t border-slate-100 bg-white space-y-3">

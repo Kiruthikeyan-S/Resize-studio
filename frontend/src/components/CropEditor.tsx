@@ -20,36 +20,44 @@ export const CropEditor: React.FC<CropEditorProps> = ({
   const [posY, setPosY] = useState<number>(50); // percentage 0..100
   const [zoom, setZoom] = useState<number>(1.0); // 1.0 .. 2.5
   const [isSaving, setIsSaving] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Active source image URL and source dimensions (honoring replacement isolation)
+  const activeSourceUrl = item?.source_url || originalData?.original_url || '';
+  const activeSourceW = item?.source_width || originalData?.width || 1920;
+  const activeSourceH = item?.source_height || originalData?.height || 1080;
+
   useEffect(() => {
-    if (item && originalData && item.crop_box) {
+    if (item && item.crop_box) {
       const [left, top, right, bottom] = item.crop_box;
       const cropW = right - left;
       const cropH = bottom - top;
-      const maxLeft = originalData.width - cropW;
-      const maxTop = originalData.height - cropH;
+      const maxLeft = activeSourceW - cropW;
+      const maxTop = activeSourceH - cropH;
 
       const initX = maxLeft > 0 ? (left / maxLeft) * 100 : 50;
       const initY = maxTop > 0 ? (top / maxTop) * 100 : 50;
       setPosX(Math.max(0, Math.min(100, initX)));
       setPosY(Math.max(0, Math.min(100, initY)));
       setZoom(1.0);
+      setErrorMessage(null);
     } else {
       setPosX(50);
       setPosY(50);
       setZoom(1.0);
+      setErrorMessage(null);
     }
-  }, [item, originalData]);
+  }, [item, activeSourceW, activeSourceH]);
 
   if (!item || !originalData) return null;
 
   const targetRatio = item.width / item.height;
-  const origW = originalData.width;
-  const origH = originalData.height;
+  const origW = activeSourceW;
+  const origH = activeSourceH;
   const origRatio = origW / origH;
 
-  // Base max crop window
+  // Base max crop window strictly maintaining exact target aspect ratio
   let baseCropW: number;
   let baseCropH: number;
   if (origRatio > targetRatio) {
@@ -61,8 +69,9 @@ export const CropEditor: React.FC<CropEditorProps> = ({
   }
 
   // Factor in zoom: higher zoom means smaller crop window in original space (zooms in on subject)
-  const effectiveCropW = Math.max(30, Math.round(baseCropW / zoom));
-  const effectiveCropH = Math.max(30, Math.round(baseCropH / zoom));
+  // Ensure minimum 10px and strict target aspect ratio preservation
+  const effectiveCropH = Math.max(10, Math.min(baseCropH, Math.round(baseCropH / zoom)));
+  const effectiveCropW = Math.max(10, Math.min(baseCropW, Math.round(effectiveCropH * targetRatio)));
 
   const maxLeft = Math.max(0, origW - effectiveCropW);
   const maxTop = Math.max(0, origH - effectiveCropH);
@@ -80,6 +89,7 @@ export const CropEditor: React.FC<CropEditorProps> = ({
 
   const handleApply = async () => {
     setIsSaving(true);
+    setErrorMessage(null);
     try {
       const updated = await api.adjustCrop(originalData.image_id, item.safe_key, [
         leftPx,
@@ -89,8 +99,10 @@ export const CropEditor: React.FC<CropEditorProps> = ({
       ]);
       onSave(updated);
       onClose();
-    } catch (err) {
-      console.error('Failed to adjust crop:', err);
+    } catch (err: any) {
+      setErrorMessage(
+        err.response?.data?.detail || 'Failed to adjust crop. Ensure coordinates are valid.'
+      );
     } finally {
       setIsSaving(false);
     }
@@ -108,7 +120,7 @@ export const CropEditor: React.FC<CropEditorProps> = ({
                 Adjust Framing: {item.name}
               </h3>
               <p className="text-[11px] text-slate-500 font-mono">
-                Target Ratio: {item.ratio_key} ({item.width} × {item.height} px)
+                Target Ratio: {item.ratio_key} ({item.width} × {item.height} px) • Source: {origW} × {origH} px
               </p>
             </div>
           </div>
@@ -127,7 +139,7 @@ export const CropEditor: React.FC<CropEditorProps> = ({
             className="relative max-h-[380px] max-w-full rounded-xl overflow-hidden border border-slate-300 select-none shadow-inner"
           >
             <img
-              src={originalData.original_url}
+              src={activeSourceUrl}
               alt="Crop editor preview"
               className="max-h-[380px] w-auto object-contain block"
             />
@@ -180,6 +192,12 @@ export const CropEditor: React.FC<CropEditorProps> = ({
 
         {/* Sliders & Controls */}
         <div className="p-4 bg-slate-50 border-t border-slate-200 space-y-4">
+          {errorMessage && (
+            <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg text-xs text-rose-700 font-medium">
+              {errorMessage}
+            </div>
+          )}
+
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             {/* Horizontal Position */}
             <div className="space-y-1">

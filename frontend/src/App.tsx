@@ -23,7 +23,7 @@ export const App: React.FC = () => {
   const [settings, setSettings] = useState<ConvertSettings>({
     image_id: '',
     mode: 'smart_crop',
-    bg_color_hex: '#18181B',
+    bg_color_hex: '#F8FAFC',
     is_transparent: false,
     export_format: 'jpeg',
     quality: 90,

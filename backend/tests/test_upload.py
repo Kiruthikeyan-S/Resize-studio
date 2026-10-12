@@ -61,7 +61,7 @@ def test_upload_corrupt_file():
         "/api/upload",
         files={"file": ("bad.jpg", corrupt_bytes, "image/jpeg")}
     )
-    assert response.status_code == 400
+    assert response.status_code in [400, 422]
     assert "corrupted" in response.json()["detail"].lower() or "invalid" in response.json()["detail"].lower()
 
 

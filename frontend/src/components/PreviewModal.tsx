@@ -61,11 +61,11 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
           </button>
         </div>
 
-        {/* High-Res Image Preview Box */}
+        {/* High-Res Full Resolution Image Preview Box */}
         <div className="p-4 sm:p-6 bg-slate-100 flex items-center justify-center overflow-auto flex-1 min-h-[350px]">
           <div className="relative max-h-[65vh] max-w-full flex items-center justify-center rounded-xl overflow-hidden border border-slate-200 bg-white shadow-sm">
             <img
-              src={`${item.preview_url}?t=${Date.now()}`}
+              src={api.getFullPreviewUrl(imageId, item.safe_key, item.version || 1)}
               alt={item.name}
               className="max-h-[65vh] max-w-full object-contain"
             />

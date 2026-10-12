@@ -12,6 +12,14 @@ export interface UploadResponse {
   is_low_res?: boolean;
 }
 
+export interface FitInfo {
+  has_subject_box: boolean;
+  fits_completely: boolean;
+  clipped_horizontal: boolean;
+  clipped_vertical: boolean;
+  message: string;
+}
+
 export interface RatioOutput {
   ratio_key: string;
   safe_key: string;
@@ -22,11 +30,16 @@ export interface RatioOutput {
   orientation: string;
   file_name: string;
   file_size: number;
+  version: number;
   preview_url: string;
   download_url: string;
+  source_url: string;
+  source_width: number;
+  source_height: number;
   crop_box: [number, number, number, number];
   mode: string;
   edges_trimmed?: boolean;
+  fit_info?: FitInfo;
 }
 
 export interface ConvertSettings {
@@ -47,6 +60,22 @@ export interface ConvertResponse {
   export_format: string;
   mode: string;
   outputs: RatioOutput[];
+}
+
+export interface GroqAnalysisResponse {
+  enabled: boolean;
+  available?: boolean;
+  message?: string;
+  analysis?: {
+    category: string;
+    description: string;
+    approximate_center_x: number;
+    approximate_center_y: number;
+    approximate_bbox?: [number, number, number, number];
+    aspect_sensitivity: string;
+    recommended_mode: string;
+    risk_notes?: string;
+  };
 }
 
 const API_BASE = '/api';
@@ -105,6 +134,11 @@ export const api = {
     return response.data;
   },
 
+  async getGroqAnalysis(imageId: string): Promise<GroqAnalysisResponse> {
+    const response = await axios.get<GroqAnalysisResponse>(`${API_BASE}/analyze/${imageId}`);
+    return response.data;
+  },
+
   async deleteSession(imageId: string): Promise<void> {
     await axios.delete(`${API_BASE}/images/${imageId}`);
   },
@@ -115,5 +149,9 @@ export const api = {
 
   getDownloadAllUrl(imageId: string): string {
     return `${API_BASE}/download-all/${imageId}`;
+  },
+
+  getFullPreviewUrl(imageId: string, safeKey: string, version: number = 1): string {
+    return `${API_BASE}/preview-full/${imageId}/${safeKey}?v=${version}`;
   },
 };
