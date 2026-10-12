@@ -9,7 +9,11 @@ export interface UploadResponse {
   format: string;
   mode: string;
   original_url: string;
+  raw_url?: string;
+  version?: number;
   is_low_res?: boolean;
+  is_cropped_master?: boolean;
+  master_crop_box?: [number, number, number, number] | null;
 }
 
 export interface FitInfo {
@@ -144,8 +148,19 @@ export const api = {
     return response.data;
   },
 
-  async getGroqAnalysis(imageId: string): Promise<GroqAnalysisResponse> {
-    const response = await axios.get<GroqAnalysisResponse>(`${API_BASE}/analyze/${imageId}`);
+  async updateOriginalFraming(
+    imageId: string,
+    cropBox: [number, number, number, number]
+  ): Promise<UploadResponse> {
+    const response = await axios.post<UploadResponse>(`${API_BASE}/update-original`, {
+      image_id: imageId,
+      crop_box: cropBox,
+    });
+    return response.data;
+  },
+
+  async resetOriginalFraming(imageId: string): Promise<UploadResponse> {
+    const response = await axios.post<UploadResponse>(`${API_BASE}/reset-original/${imageId}`);
     return response.data;
   },
 

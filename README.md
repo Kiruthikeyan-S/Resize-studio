@@ -30,6 +30,12 @@ Every output is generated with mathematical precision according to standard prod
   - One-click **"Convert All Images"** to batch-generate all 5 ratios across all uploaded files.
   - Multi-image **Batch ZIP Package** (`GET /api/download-batch`) organizing outputs into labeled subfolders with a master `manifest.json`.
   - Add more images to the active queue dynamically at any time.
+- **Original-Image-First Workflow**:
+  - **Upload Original Image**: Image is uploaded and validated.
+  - **Edit Framing First**: Interactive modal opens automatically with the original image centered, 3x3 grid lines, center crosshair, horizontal/vertical pan sliders, and zoom slider.
+  - **Apply & Update**: Finalizes the master framing state (`working.png`) without destructively overwriting the untouched upload (`raw.*`).
+  - **Generate 5 Ratios**: All 5 outputs are generated from this refined common base image for maximum framing consistency.
+  - **Individual Post-Adjustment**: Users can still fine-tune individual ratio crops or replace source images per-ratio as needed.
 - **Two Dedicated Processing Options & Mode-Isolated State**:
   1. **Option A — Full-Frame Photo (`smart_crop`)**: Multi-cue subject-aware Smart Crop combining spectral saliency, Canny edge detection, and morphological bounding contours. Fills the target frame completely without padding or distortion. If geometry indicates subject sides will be trimmed, it accurately flags this in the UI and allows the user to switch to Option B manually without silent unexpected conversions.
   2. **Option B — Entire Image Visible (`safe_fit`)**: Preserves 100% of the uploaded image on a clean solid studio background (Pure White, Light Gray, Dark Slate, Pitch Black, or custom hex color).

@@ -424,4 +424,53 @@ def test_food_platter_distinct_full_frame_crops_all_ratios():
     assert len(crop_boxes) == 5, "Crop windows should be uniquely customized for each ratio"
 
 
+def test_original_image_framing_update_and_generation():
+    """Verify workflow: Upload -> Crop/Adjust Original -> Apply & Update -> Generate 5 Ratios."""
+    img = Image.new("RGB", (1200, 800), (100, 150, 200))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=90)
+    upload_res = client.post("/api/upload", files={"file": ("framing_test.jpg", buf.getvalue(), "image/jpeg")})
+    assert upload_res.status_code == 200
+    upload_data = upload_res.json()
+    image_id = upload_data["image_id"]
+    assert upload_data["width"] == 1200
+    assert upload_data["height"] == 800
+
+    # 1. Update original framing with crop_box [100, 100, 900, 700] -> 800x600
+    update_res = client.post("/api/update-original", json={
+        "image_id": image_id,
+        "crop_box": [100, 100, 900, 700]
+    })
+    assert update_res.status_code == 200
+    updated_data = update_res.json()
+    assert updated_data["width"] == 800
+    assert updated_data["height"] == 600
+    assert updated_data["is_cropped_master"] is True
+    assert updated_data["master_crop_box"] == [100, 100, 900, 700]
+
+    # 2. Check /api/original returns the updated dimensions
+    orig_res = client.get(f"/api/original/{image_id}")
+    assert orig_res.status_code == 200
+    updated_img = Image.open(io.BytesIO(orig_res.content))
+    assert updated_img.size == (800, 600)
+
+    # 3. Generate the 5 ratios from the adjusted original
+    convert_res = client.post("/api/convert", json={"image_id": image_id, "mode": "smart_crop"})
+    assert convert_res.status_code == 200
+    outputs = convert_res.json()["outputs"]
+    assert len(outputs) == 5
+    # Verify each ratio used the updated 800x600 source
+    for out in outputs:
+        assert out["source_width"] == 800
+        assert out["source_height"] == 600
+
+    # 4. Reset original framing back to untouched raw
+    reset_res = client.post(f"/api/reset-original/{image_id}")
+    assert reset_res.status_code == 200
+    reset_data = reset_res.json()
+    assert reset_data["width"] == 1200
+    assert reset_data["height"] == 800
+    assert reset_data["is_cropped_master"] is False
+
+
 

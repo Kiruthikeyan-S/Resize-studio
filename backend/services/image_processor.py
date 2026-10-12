@@ -131,18 +131,116 @@ def get_original_metadata(image_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def get_raw_file_path(image_id: str) -> Optional[str]:
+    """Retrieve untouched uploaded raw file path."""
+    meta = get_original_metadata(image_id)
+    if meta and "raw_path" in meta and os.path.exists(meta["raw_path"]):
+        return meta["raw_path"]
+    orig_session_dir, _ = get_image_session_dirs(image_id)
+    for f in os.listdir(orig_session_dir):
+        if f.startswith("raw."):
+            return os.path.join(orig_session_dir, f)
+    return None
+
+
 def get_original_file_path(image_id: str) -> Optional[str]:
     """Retrieve working master image file path."""
     meta = get_original_metadata(image_id)
     if meta and "file_path" in meta and os.path.exists(meta["file_path"]):
         return meta["file_path"]
-    # Fallback check for raw or legacy original.*
     orig_session_dir, _ = get_image_session_dirs(image_id)
     for candidate in ["working.png", "original.jpg", "original.png", "original.webp"]:
         p = os.path.join(orig_session_dir, candidate)
         if os.path.exists(p):
             return p
     return None
+
+
+def update_working_image(
+    image_id: str,
+    crop_box: Tuple[int, int, int, int]
+) -> Dict[str, Any]:
+    """
+    Apply user-adjusted framing (pan/zoom crop box) to create the new finalized working copy.
+    The untouched original (raw) is preserved so the user can reset anytime.
+    Updates working.png and increments version for cache busting.
+    """
+    orig_session_dir, _ = get_image_session_dirs(image_id)
+    raw_path = get_raw_file_path(image_id)
+    if not raw_path or not os.path.exists(raw_path):
+        raise FileNotFoundError(f"Raw original file not found for session {image_id}")
+
+    meta = get_original_metadata(image_id) or {}
+    working_path = os.path.join(orig_session_dir, "working.png")
+
+    with Image.open(raw_path) as img:
+        img_fixed = fix_exif_orientation(img)
+        img_fixed = ensure_srgb_profile(img_fixed)
+        orig_w, orig_h = img_fixed.size
+
+        left, top, right, bottom = crop_box
+        # Bound coordinates to original image
+        left = max(0, min(orig_w - 1, left))
+        top = max(0, min(orig_h - 1, top))
+        right = max(left + 10, min(orig_w, right))
+        bottom = max(top + 10, min(orig_h, bottom))
+
+        cropped = img_fixed.crop((left, top, right, bottom))
+        # Save as new working master copy in lossless PNG
+        cropped.save(working_path, format="PNG")
+
+        new_w, new_h = cropped.size
+        version = int(meta.get("version", 1)) + 1
+
+        meta.update({
+            "width": new_w,
+            "height": new_h,
+            "version": version,
+            "is_cropped_master": True,
+            "master_crop_box": [left, top, right, bottom],
+            "raw_width": orig_w,
+            "raw_height": orig_h,
+        })
+
+    meta_path = os.path.join(orig_session_dir, "meta.json")
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
+
+    return meta
+
+
+def reset_working_image(image_id: str) -> Dict[str, Any]:
+    """
+    Reset the working image back to the untouched raw upload.
+    """
+    orig_session_dir, _ = get_image_session_dirs(image_id)
+    raw_path = get_raw_file_path(image_id)
+    if not raw_path or not os.path.exists(raw_path):
+        raise FileNotFoundError(f"Raw original file not found for session {image_id}")
+
+    meta = get_original_metadata(image_id) or {}
+    working_path = os.path.join(orig_session_dir, "working.png")
+
+    with Image.open(raw_path) as img:
+        img_fixed = fix_exif_orientation(img)
+        img_fixed = ensure_srgb_profile(img_fixed)
+        width, height = img_fixed.size
+        img_fixed.save(working_path, format="PNG")
+
+        version = int(meta.get("version", 1)) + 1
+        meta.update({
+            "width": width,
+            "height": height,
+            "version": version,
+            "is_cropped_master": False,
+            "master_crop_box": None,
+        })
+
+    meta_path = os.path.join(orig_session_dir, "meta.json")
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
+
+    return meta
 
 
 def get_ratio_source_info(image_id: str, ratio_safe_key: str) -> Tuple[str, str, int, int]:

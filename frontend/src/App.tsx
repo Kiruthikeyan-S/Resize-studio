@@ -7,6 +7,7 @@ import { ConversionSettings } from './components/ConversionSettings';
 import { PreviewGrid } from './components/PreviewGrid';
 import { DownloadAll } from './components/DownloadAll';
 import { CropEditor } from './components/CropEditor';
+import { OriginalCropEditor } from './components/OriginalCropEditor';
 import { PreviewModal } from './components/PreviewModal';
 import type { UploadResponse, RatioOutput, ConvertSettings } from './services/api';
 import { api } from './services/api';
@@ -25,6 +26,7 @@ export const App: React.FC = () => {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [editingItem, setEditingItem] = useState<RatioOutput | null>(null);
   const [previewModalItem, setPreviewModalItem] = useState<RatioOutput | null>(null);
+  const [isEditingOriginal, setIsEditingOriginal] = useState<boolean>(false);
 
   const [settings, setSettings] = useState<ConvertSettings>({
     image_id: '',
@@ -55,6 +57,8 @@ export const App: React.FC = () => {
         ...prev,
         image_id: uploadedList[0].image_id,
       }));
+      // Auto-open crop editor for the original image so user adjusts framing first
+      setIsEditingOriginal(true);
     }
     setErrorMessage(null);
   };
@@ -205,6 +209,32 @@ export const App: React.FC = () => {
     });
   };
 
+  const handleUpdateOriginalSuccess = (updatedData: UploadResponse) => {
+    // 1. Update the image entry in images list with new dimensions, version, and master crop status
+    setImages((prev) =>
+      prev.map((img) => (img.image_id === updatedData.image_id ? updatedData : img))
+    );
+
+    // 2. Clear out any previous ratio outputs for this image so they must be generated from the newly adjusted framing
+    setOutputsByModeMap((prev) => {
+      const copy = { ...prev };
+      delete copy[updatedData.image_id];
+      return copy;
+    });
+
+    setErrorMessage(null);
+  };
+
+  const handleRevertToRaw = async () => {
+    if (!activeImage) return;
+    try {
+      const reset = await api.resetOriginalFraming(activeImage.image_id);
+      handleUpdateOriginalSuccess(reset);
+    } catch (err: any) {
+      setErrorMessage(err.response?.data?.detail || err.message || 'Failed to revert original image.');
+    }
+  };
+
   // Convert outputsByModeMap to a flat imageOutputsMap for ImageQueueBar progress indicators
   const queueOutputsMap: Record<string, RatioOutput[]> = {};
   for (const img of images) {
@@ -275,7 +305,12 @@ export const App: React.FC = () => {
 
             {/* Active Image Source Preview */}
             {activeImage && (
-              <OriginalPreview originalData={activeImage} onReset={handleReset} />
+              <OriginalPreview
+                originalData={activeImage}
+                onReset={handleReset}
+                onOpenEditor={() => setIsEditingOriginal(true)}
+                onRevertToRaw={handleRevertToRaw}
+              />
             )}
 
             {/* Conversion Controls */}
@@ -382,7 +417,16 @@ export const App: React.FC = () => {
         </section>
       </main>
 
-      {/* Interactive Crop Modal */}
+      {/* Original Image Framing Editor Modal */}
+      {isEditingOriginal && activeImage && (
+        <OriginalCropEditor
+          originalData={activeImage}
+          onClose={() => setIsEditingOriginal(false)}
+          onApply={handleUpdateOriginalSuccess}
+        />
+      )}
+
+      {/* Individual Ratio Crop Modal */}
       {editingItem && activeImage && (
         <CropEditor
           item={editingItem}
