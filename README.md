@@ -30,9 +30,15 @@ Every output is generated with mathematical precision according to standard prod
   - One-click **"Convert All Images"** to batch-generate all 5 ratios across all uploaded files.
   - Multi-image **Batch ZIP Package** (`GET /api/download-batch`) organizing outputs into labeled subfolders with a master `manifest.json`.
   - Add more images to the active queue dynamically at any time.
-- **Two Clear Processing Options**:
-  1. **Full-Frame Photo (Default)**: Multi-cue subject-aware Smart Crop combining spectral saliency, Canny edge detection, and morphological bounding contours. Anchors directly on the main subject (vehicles, products, portraits) to maximize subject prominence while preserving accurate proportions. If extreme aspect ratio shift (e.g. wide vehicle into narrow portrait 4:5 or 3:4) would clip vehicle wheels or bumpers, the engine automatically falls back to Safe Fit to safeguard the complete subject.
-  2. **Entire Image Visible (Safe Fit)**: Preserves 100% of the image on a clean solid studio background (Pure White, Light Gray, Dark Slate, Pitch Black, or custom hex color).
+- **Two Dedicated Processing Options & Mode-Isolated State**:
+  1. **Option A — Full-Frame Photo (`smart_crop`)**: Multi-cue subject-aware Smart Crop combining spectral saliency, Canny edge detection, and morphological bounding contours. Fills the target frame completely without padding or distortion. If geometry indicates subject sides will be trimmed, it accurately flags this in the UI and allows the user to switch to Option B manually without silent unexpected conversions.
+  2. **Option B — Entire Image Visible (`safe_fit`)**: Preserves 100% of the uploaded image on a clean solid studio background (Pure White, Light Gray, Dark Slate, Pitch Black, or custom hex color).
+- **Independent Mode Outputs & Zero Cross-Contamination**:
+  - Generated files for Option 1 and Option 2 are persisted independently (`image_{ratio}_{mode}.{ext}`).
+  - Switching between Option 1 and Option 2 in the frontend displays the exact corresponding outputs instantly without overwriting or showing stale cached data.
+  - Previews (`/api/preview/...?mode=...`) and Downloads (both single `/api/download/...` and master ZIP `/api/download-all/...`) respect the active mode.
+- **Clean, Professional UI**:
+  - Removed decorative AI sparkles and badges for a minimal, clean, professional light theme.
 - **Lossless Master Upload Caching**:
   - Uploaded files are preserved byte-for-byte unchanged (`raw.*`).
   - A normalized working master copy (`working.png`) is created with EXIF orientation corrected, eliminating repeated lossy JPEG recompression artifacts.

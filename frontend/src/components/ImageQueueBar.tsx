@@ -1,5 +1,5 @@
 import React, { useRef } from 'react';
-import { Plus, X, CheckCircle2, Clock, Images, Sparkles } from 'lucide-react';
+import { Plus, X, CheckCircle2, Clock, Images, Layers } from 'lucide-react';
 import type { UploadResponse } from '../services/api';
 import { api } from '../services/api';
 
@@ -83,7 +83,7 @@ export const ImageQueueBar: React.FC<ImageQueueBarProps> = ({
               disabled={isBatchConverting}
               className="py-1.5 px-3 rounded-xl bg-violet-50 hover:bg-violet-100 text-violet-700 font-semibold text-xs flex items-center gap-1.5 transition-colors cursor-pointer border border-violet-200 disabled:opacity-50"
             >
-              <Sparkles className="w-3.5 h-3.5" />
+              <Layers className="w-3.5 h-3.5" />
               <span>
                 {isBatchConverting
                   ? 'Converting All...'

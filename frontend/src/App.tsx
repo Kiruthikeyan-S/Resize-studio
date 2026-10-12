@@ -12,10 +12,13 @@ import type { UploadResponse, RatioOutput, ConvertSettings } from './services/ap
 import { api } from './services/api';
 import { AlertCircle } from 'lucide-react';
 
+export type ProcessingMode = 'smart_crop' | 'safe_fit' | 'manual_crop';
+
 export const App: React.FC = () => {
   const [images, setImages] = useState<UploadResponse[]>([]);
   const [activeImageId, setActiveImageId] = useState<string>('');
-  const [outputsMap, setOutputsMap] = useState<Record<string, RatioOutput[]>>({});
+  // Mode-isolated outputs map: imageId -> mode -> RatioOutput[]
+  const [outputsByModeMap, setOutputsByModeMap] = useState<Record<string, Record<string, RatioOutput[]>>>({});
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [isBatchGenerating, setIsBatchGenerating] = useState<boolean>(false);
@@ -35,7 +38,10 @@ export const App: React.FC = () => {
   });
 
   const activeImage = images.find((img) => img.image_id === activeImageId) || images[0] || null;
-  const currentOutputs = activeImage ? (outputsMap[activeImage.image_id] || []) : [];
+  // Strictly display outputs for active image and current selected mode
+  const currentOutputs = activeImage
+    ? (outputsByModeMap[activeImage.image_id]?.[settings.mode] || [])
+    : [];
 
   const handleUploadSuccess = (uploadedList: UploadResponse[]) => {
     setImages((prev) => {
@@ -65,7 +71,7 @@ export const App: React.FC = () => {
     const remaining = images.filter((img) => img.image_id !== imageId);
     setImages(remaining);
 
-    setOutputsMap((prev) => {
+    setOutputsByModeMap((prev) => {
       const copy = { ...prev };
       delete copy[imageId];
       return copy;
@@ -105,7 +111,7 @@ export const App: React.FC = () => {
     }
     setImages([]);
     setActiveImageId('');
-    setOutputsMap({});
+    setOutputsByModeMap({});
     setErrorMessage(null);
     setEditingItem(null);
     setPreviewModalItem(null);
@@ -113,20 +119,24 @@ export const App: React.FC = () => {
 
   const handleGenerate = async (customMode?: 'smart_crop' | 'safe_fit' | 'manual_crop') => {
     if (!activeImage) return;
+    const targetMode = customMode || settings.mode;
     setIsGenerating(true);
     setErrorMessage(null);
 
     const activeSettings: ConvertSettings = {
       ...settings,
       image_id: activeImage.image_id,
-      mode: customMode || settings.mode,
+      mode: targetMode,
     };
 
     try {
       const response = await api.convertImage(activeSettings);
-      setOutputsMap((prev) => ({
+      setOutputsByModeMap((prev) => ({
         ...prev,
-        [activeImage.image_id]: response.outputs,
+        [activeImage.image_id]: {
+          ...(prev[activeImage.image_id] || {}),
+          [targetMode]: response.outputs,
+        },
       }));
     } catch (err: any) {
       setErrorMessage(
@@ -142,18 +152,24 @@ export const App: React.FC = () => {
     setIsBatchGenerating(true);
     setErrorMessage(null);
 
-    const newOutputsMap = { ...outputsMap };
+    const currentMode = settings.mode;
 
     for (const img of images) {
       const imageSettings: ConvertSettings = {
         ...settings,
         image_id: img.image_id,
+        mode: currentMode,
       };
 
       try {
         const response = await api.convertImage(imageSettings);
-        newOutputsMap[img.image_id] = response.outputs;
-        setOutputsMap({ ...newOutputsMap });
+        setOutputsByModeMap((prev) => ({
+          ...prev,
+          [img.image_id]: {
+            ...(prev[img.image_id] || {}),
+            [currentMode]: response.outputs,
+          },
+        }));
       } catch (err: any) {
         console.error(`Failed to convert ${img.original_filename}:`, err);
       }
@@ -164,25 +180,42 @@ export const App: React.FC = () => {
 
   const handleSwitchToSafeFit = () => {
     setSettings((prev) => ({ ...prev, mode: 'safe_fit' }));
-    handleGenerate('safe_fit');
+    // If safe_fit outputs already exist for active image, user immediately sees them.
+    // If not, generate them now.
+    if (!activeImage || !outputsByModeMap[activeImage.image_id]?.['safe_fit']) {
+      handleGenerate('safe_fit');
+    }
   };
 
   const handleUpdateSingleRatio = (updated: RatioOutput) => {
     if (!activeImage) return;
-    setOutputsMap((prev) => {
-      const existing = prev[activeImage.image_id] || [];
-      const updatedList = existing.map((item) =>
+    const currentMode = settings.mode;
+    setOutputsByModeMap((prev) => {
+      const existingForMode = prev[activeImage.image_id]?.[currentMode] || [];
+      const updatedList = existingForMode.map((item) =>
         item.safe_key === updated.safe_key ? updated : item
       );
       return {
         ...prev,
-        [activeImage.image_id]: updatedList,
+        [activeImage.image_id]: {
+          ...(prev[activeImage.image_id] || {}),
+          [currentMode]: updatedList,
+        },
       };
     });
   };
 
+  // Convert outputsByModeMap to a flat imageOutputsMap for ImageQueueBar progress indicators
+  const queueOutputsMap: Record<string, RatioOutput[]> = {};
+  for (const img of images) {
+    const modeOutputs = outputsByModeMap[img.image_id]?.[settings.mode];
+    if (modeOutputs && modeOutputs.length > 0) {
+      queueOutputsMap[img.image_id] = modeOutputs;
+    }
+  }
+
   const convertedImagesCount = images.filter(
-    (img) => (outputsMap[img.image_id]?.length || 0) > 0
+    (img) => (outputsByModeMap[img.image_id]?.[settings.mode]?.length || 0) > 0
   ).length;
 
   return (
@@ -235,7 +268,7 @@ export const App: React.FC = () => {
               onSelectImage={handleSelectImage}
               onRemoveImage={handleRemoveImage}
               onAddImages={handleAddImages}
-              imageOutputsMap={outputsMap}
+              imageOutputsMap={queueOutputsMap}
               onBatchConvertAll={handleBatchConvertAll}
               isBatchConverting={isBatchGenerating}
             />
@@ -263,9 +296,10 @@ export const App: React.FC = () => {
                   imageId={activeImage.image_id}
                   totalOutputs={currentOutputs.length}
                   allImageIds={images
-                    .filter((img) => (outputsMap[img.image_id]?.length || 0) > 0)
+                    .filter((img) => (outputsByModeMap[img.image_id]?.[settings.mode]?.length || 0) > 0)
                     .map((img) => img.image_id)}
                   totalConvertedImages={convertedImagesCount}
+                  mode={settings.mode}
                 />
 
                 <PreviewGrid

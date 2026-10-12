@@ -330,14 +330,65 @@ def test_wide_vehicle_automatic_safe_fit_fallback():
     portrait_4x5 = next(item for item in data["outputs"] if item["safe_key"] == "portrait_4x5")
     portrait_3x4 = next(item for item in data["outputs"] if item["safe_key"] == "portrait_3x4")
 
-    # Due to extreme aspect ratio shift (1600x600 -> 4:5 or 3:4), the wide vehicle would lose > 50% width.
-    # The automatic fallback should switch mode to safe_fit to prevent cutting off car ends
-    assert portrait_4x5["mode"] == "safe_fit"
-    assert portrait_4x5["fallback_reason"] is not None
-    assert "preserved" in portrait_4x5["fallback_reason"].lower()
+    # In strict Full-Frame Photo (smart_crop), the engine never silently switches to safe_fit.
+    # Instead, it preserves mode as smart_crop, crops to fill the target canvas, and reports fit_info.
+    assert portrait_4x5["mode"] == "smart_crop"
+    assert portrait_4x5["fit_info"] is not None
+    assert portrait_4x5["fit_info"]["fits_completely"] is False
+    assert portrait_4x5["fit_info"]["clipped_horizontal"] is True
 
-    assert portrait_3x4["mode"] == "safe_fit"
-    assert portrait_3x4["fallback_reason"] is not None
+    assert portrait_3x4["mode"] == "smart_crop"
+    assert portrait_3x4["fit_info"] is not None
+    assert portrait_3x4["fit_info"]["fits_completely"] is False
+
+
+def test_option_switching_and_mode_isolation():
+    """Verify switching between Option 1 (smart_crop) and Option 2 (safe_fit) produces mode-isolated files and downloads."""
+    # Create image
+    img = Image.new("RGB", (1200, 600), (200, 100, 50))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=90)
+    upload_res = client.post("/api/upload", files={"file": ("test_switch.jpg", buf.getvalue(), "image/jpeg")})
+    assert upload_res.status_code == 200
+    image_id = upload_res.json()["image_id"]
+
+    # 1. Convert with Option 1: smart_crop
+    res1 = client.post("/api/convert", json={"image_id": image_id, "mode": "smart_crop"})
+    assert res1.status_code == 200
+    data1 = res1.json()
+    assert all(o["mode"] == "smart_crop" for o in data1["outputs"])
+
+    # 2. Convert with Option 2: safe_fit
+    res2 = client.post("/api/convert", json={"image_id": image_id, "mode": "safe_fit", "bg_color_hex": "#112233"})
+    assert res2.status_code == 200
+    data2 = res2.json()
+    assert all(o["mode"] == "safe_fit" for o in data2["outputs"])
+
+    # 3. Verify download endpoints return mode-specific images
+    # Option 1 download (smart_crop)
+    dl1 = client.get(f"/api/download/{image_id}/portrait_4x5?mode=smart_crop")
+    assert dl1.status_code == 200
+    img1 = Image.open(io.BytesIO(dl1.content))
+    assert img1.size == (1600, 2000)
+
+    # Option 2 download (safe_fit)
+    dl2 = client.get(f"/api/download/{image_id}/portrait_4x5?mode=safe_fit")
+    assert dl2.status_code == 200
+    img2 = Image.open(io.BytesIO(dl2.content))
+    assert img2.size == (1600, 2000)
+
+    # Check color at corner (0, 0):
+    # In safe_fit with #112233 padding, corner will have background padding color (17, 34, 51)
+    # In smart_crop, it fills the frame with the image content (200, 100, 50)
+    corner_safe_fit = img2.getpixel((5, 5))
+    corner_smart_crop = img1.getpixel((5, 5))
+    assert corner_safe_fit != corner_smart_crop, "Option 1 and Option 2 outputs must be distinct"
+
+    # 4. Verify ZIP downloads for both modes
+    zip1 = client.get(f"/api/download-all/{image_id}?mode=smart_crop")
+    assert zip1.status_code == 200
+    zip2 = client.get(f"/api/download-all/{image_id}?mode=safe_fit")
+    assert zip2.status_code == 200
 
 
 def test_food_platter_distinct_full_frame_crops_all_ratios():

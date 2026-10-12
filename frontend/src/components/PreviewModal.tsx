@@ -17,7 +17,7 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
   if (!item) return null;
 
   const handleDownload = () => {
-    const url = api.getDownloadUrl(imageId, item.safe_key);
+    const url = api.getDownloadUrl(imageId, item.safe_key, item.mode);
     const link = document.createElement('a');
     link.href = url;
     link.setAttribute('download', item.file_name);

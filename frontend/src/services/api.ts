@@ -153,19 +153,23 @@ export const api = {
     await axios.delete(`${API_BASE}/images/${imageId}`);
   },
 
-  getDownloadUrl(imageId: string, safeKey: string): string {
-    return `${API_BASE}/download/${imageId}/${safeKey}`;
+  getDownloadUrl(imageId: string, safeKey: string, mode?: string): string {
+    const q = mode ? `?mode=${encodeURIComponent(mode)}` : '';
+    return `${API_BASE}/download/${imageId}/${safeKey}${q}`;
   },
 
-  getDownloadAllUrl(imageId: string): string {
-    return `${API_BASE}/download-all/${imageId}`;
+  getDownloadAllUrl(imageId: string, mode?: string): string {
+    const q = mode ? `?mode=${encodeURIComponent(mode)}` : '';
+    return `${API_BASE}/download-all/${imageId}${q}`;
   },
 
-  getDownloadBatchUrl(imageIds: string[]): string {
-    return `${API_BASE}/download-batch?image_ids=${imageIds.join(',')}`;
+  getDownloadBatchUrl(imageIds: string[], mode?: string): string {
+    const modeParam = mode ? `&mode=${encodeURIComponent(mode)}` : '';
+    return `${API_BASE}/download-batch?image_ids=${imageIds.join(',')}${modeParam}`;
   },
 
-  getFullPreviewUrl(imageId: string, safeKey: string, version: number = 1): string {
-    return `${API_BASE}/preview-full/${imageId}/${safeKey}?v=${version}`;
+  getFullPreviewUrl(imageId: string, safeKey: string, version: number = 1, mode?: string): string {
+    const modeParam = mode ? `&mode=${encodeURIComponent(mode)}` : '';
+    return `${API_BASE}/preview-full/${imageId}/${safeKey}?v=${version}${modeParam}`;
   },
 };

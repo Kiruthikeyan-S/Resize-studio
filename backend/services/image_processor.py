@@ -208,6 +208,17 @@ def generate_all_ratios(
 
     custom_crops = custom_crops or {}
 
+    manifest_path = os.path.join(gen_session_dir, "metadata.json")
+    prev_manifest: Dict[str, Any] = {}
+    if os.path.exists(manifest_path):
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                prev_manifest = json.load(f)
+        except Exception:
+            pass
+
+    revision = int(prev_manifest.get("revision", 0)) + 1
+
     results = []
     with Image.open(orig_path) as source_img:
         source_img = ensure_srgb_profile(source_img)
@@ -242,9 +253,9 @@ def generate_all_ratios(
                     bg_color_hex=bg_color_hex
                 )
 
-            # Primary file name
-            out_filename = f"image_{safe_key}.{ext}"
-            out_path = os.path.join(gen_session_dir, out_filename)
+            # Save mode-specific file to prevent cross-mode cache collisions
+            mode_filename = f"image_{safe_key}_{effective_mode}.{ext}"
+            mode_path = os.path.join(gen_session_dir, mode_filename)
 
             # Save full resolution output with high quality
             save_kwargs = {}
@@ -257,7 +268,13 @@ def generate_all_ratios(
             elif export_format == "png":
                 save_kwargs["compress_level"] = 6
 
-            final_img.save(out_path, format=export_format.upper(), **save_kwargs)
+            final_img.save(mode_path, format=export_format.upper(), **save_kwargs)
+
+            # Also maintain canonical file name for backward compatibility
+            out_filename = f"image_{safe_key}.{ext}"
+            out_path = os.path.join(gen_session_dir, out_filename)
+            if out_path != mode_path:
+                shutil.copyfile(mode_path, out_path)
 
             # Legacy alias copy (e.g. image_1x1.jpg)
             legacy_filename = f"image_{legacy_key}.{ext}"
@@ -271,22 +288,27 @@ def generate_all_ratios(
             thumb_h = int(round(config["height"] * thumb_scale))
             thumb_img = final_img.resize((thumb_w, thumb_h), resample=Image.Resampling.LANCZOS)
 
+            mode_thumb_filename = f"thumb_{safe_key}_{effective_mode}.webp"
+            mode_thumb_path = os.path.join(gen_session_dir, mode_thumb_filename)
+            thumb_img.save(mode_thumb_path, format="WEBP", quality=88)
+
             thumb_filename = f"thumb_{safe_key}.webp"
             thumb_path = os.path.join(gen_session_dir, thumb_filename)
-            thumb_img.save(thumb_path, format="WEBP", quality=88)
+            if thumb_path != mode_thumb_path:
+                shutil.copyfile(mode_thumb_path, thumb_path)
 
             legacy_thumb_path = os.path.join(gen_session_dir, f"thumb_{legacy_key}.webp")
             if legacy_thumb_path != thumb_path:
                 shutil.copyfile(thumb_path, legacy_thumb_path)
 
-            file_size = os.path.getsize(out_path)
+            file_size = os.path.getsize(mode_path)
 
             # Determine whether edge content was trimmed
             crop_w = crop_box[2] - crop_box[0]
             crop_h = crop_box[3] - crop_box[1]
             edges_trimmed = (crop_w < orig_w * 0.90) or (crop_h < orig_h * 0.90)
 
-            version = 1
+            version = revision
             results.append({
                 "ratio_key": ratio_key,
                 "safe_key": safe_key,
@@ -297,10 +319,10 @@ def generate_all_ratios(
                 "orientation": config["orientation"],
                 "file_name": out_filename,
                 "file_size": file_size,
-                "file_path": out_path,
+                "file_path": mode_path,
                 "version": version,
-                "preview_url": f"/api/preview/{image_id}/{safe_key}?v={version}",
-                "download_url": f"/api/download/{image_id}/{safe_key}",
+                "preview_url": f"/api/preview/{image_id}/{safe_key}?mode={effective_mode}&v={version}",
+                "download_url": f"/api/download/{image_id}/{safe_key}?mode={effective_mode}",
                 "source_url": f"/api/original/{image_id}",
                 "source_width": orig_w,
                 "source_height": orig_h,
@@ -312,6 +334,9 @@ def generate_all_ratios(
                 "fallback_reason": fallback_reason,
             })
 
+    outputs_by_mode = prev_manifest.get("outputs_by_mode", {})
+    outputs_by_mode[mode] = results
+
     session_data = {
         "image_id": image_id,
         "original_filename": orig_meta.get("original_filename", "image"),
@@ -320,15 +345,16 @@ def generate_all_ratios(
         "export_format": export_format,
         "quality": quality,
         "mode": mode,
+        "revision": revision,
         "bg_color_hex": bg_color_hex,
         "is_transparent": is_transparent,
         "sharpen": sharpen,
         "denoise": denoise,
         "generated_at": time.time(),
         "outputs": results,
+        "outputs_by_mode": outputs_by_mode,
     }
 
-    manifest_path = os.path.join(gen_session_dir, "metadata.json")
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(session_data, f, indent=2)
 
@@ -420,8 +446,8 @@ def regenerate_single_ratio(
                 bg_color_hex=proc_bg_color
             )
 
-        out_filename = f"image_{target_config['safe_key']}.{ext}"
-        out_path = os.path.join(gen_session_dir, out_filename)
+        mode_filename = f"image_{target_config['safe_key']}_{effective_mode}.{ext}"
+        mode_path = os.path.join(gen_session_dir, mode_filename)
 
         save_kwargs = {}
         if export_format == "jpeg":
@@ -433,7 +459,12 @@ def regenerate_single_ratio(
         elif export_format == "png":
             save_kwargs["compress_level"] = 6
 
-        final_img.save(out_path, format=export_format.upper(), **save_kwargs)
+        final_img.save(mode_path, format=export_format.upper(), **save_kwargs)
+
+        out_filename = f"image_{target_config['safe_key']}.{ext}"
+        out_path = os.path.join(gen_session_dir, out_filename)
+        if out_path != mode_path:
+            shutil.copyfile(mode_path, out_path)
 
         legacy_path = os.path.join(gen_session_dir, f"image_{target_config['legacy_key']}.{ext}")
         if legacy_path != out_path:
@@ -444,15 +475,20 @@ def regenerate_single_ratio(
         thumb_h = int(round(target_config["height"] * thumb_scale))
         thumb_img = final_img.resize((thumb_w, thumb_h), resample=Image.Resampling.LANCZOS)
 
+        mode_thumb_filename = f"thumb_{target_config['safe_key']}_{effective_mode}.webp"
+        mode_thumb_path = os.path.join(gen_session_dir, mode_thumb_filename)
+        thumb_img.save(mode_thumb_path, format="WEBP", quality=88)
+
         thumb_filename = f"thumb_{target_config['safe_key']}.webp"
         thumb_path = os.path.join(gen_session_dir, thumb_filename)
-        thumb_img.save(thumb_path, format="WEBP", quality=88)
+        if thumb_path != mode_thumb_path:
+            shutil.copyfile(mode_thumb_path, thumb_path)
 
         legacy_thumb_path = os.path.join(gen_session_dir, f"thumb_{target_config['legacy_key']}.webp")
         if legacy_thumb_path != thumb_path:
             shutil.copyfile(thumb_path, legacy_thumb_path)
 
-        file_size = os.path.getsize(out_path)
+        file_size = os.path.getsize(mode_path)
 
         crop_w = crop_box[2] - crop_box[0]
         crop_h = crop_box[3] - crop_box[1]
@@ -474,10 +510,10 @@ def regenerate_single_ratio(
             "orientation": target_config["orientation"],
             "file_name": out_filename,
             "file_size": file_size,
-            "file_path": out_path,
+            "file_path": mode_path,
             "version": current_version,
-            "preview_url": f"/api/preview/{image_id}/{target_config['safe_key']}?v={current_version}",
-            "download_url": f"/api/download/{image_id}/{target_config['safe_key']}",
+            "preview_url": f"/api/preview/{image_id}/{target_config['safe_key']}?mode={effective_mode}&v={current_version}",
+            "download_url": f"/api/download/{image_id}/{target_config['safe_key']}?mode={effective_mode}",
             "source_url": source_url,
             "source_width": orig_w,
             "source_height": orig_h,

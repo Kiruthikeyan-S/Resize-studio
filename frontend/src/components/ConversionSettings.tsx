@@ -1,4 +1,4 @@
-import { Sliders, Maximize2, Shield, Play, Palette, Check, Sparkles } from 'lucide-react';
+import { Sliders, Maximize2, Shield, Play, Palette, Check, Layers } from 'lucide-react';
 import type { ConvertSettings } from '../services/api';
 
 interface ConversionSettingsProps {
@@ -334,7 +334,7 @@ export const ConversionSettings: React.FC<ConversionSettingsProps> = ({
               </>
             ) : (
               <>
-                <Sparkles className="w-4 h-4 text-violet-300" />
+                <Layers className="w-4 h-4 text-slate-300" />
                 <span>Convert All {totalImagesCount} Images</span>
               </>
             )}

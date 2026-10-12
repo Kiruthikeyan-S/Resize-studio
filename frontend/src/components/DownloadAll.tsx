@@ -7,6 +7,7 @@ interface DownloadAllProps {
   totalOutputs: number;
   allImageIds?: string[];
   totalConvertedImages?: number;
+  mode?: string;
 }
 
 export const DownloadAll: React.FC<DownloadAllProps> = ({
@@ -14,13 +15,14 @@ export const DownloadAll: React.FC<DownloadAllProps> = ({
   totalOutputs,
   allImageIds = [],
   totalConvertedImages = 1,
+  mode,
 }) => {
   const [isDownloading, setIsDownloading] = useState(false);
   const [isDownloadingBatch, setIsDownloadingBatch] = useState(false);
 
   const handleDownloadZip = () => {
     setIsDownloading(true);
-    const url = api.getDownloadAllUrl(imageId);
+    const url = api.getDownloadAllUrl(imageId, mode);
     const link = document.createElement('a');
     link.href = url;
     link.setAttribute('download', 'ratio-studio-images.zip');
@@ -36,7 +38,7 @@ export const DownloadAll: React.FC<DownloadAllProps> = ({
   const handleDownloadBatchZip = () => {
     if (!allImageIds.length) return;
     setIsDownloadingBatch(true);
-    const url = api.getDownloadBatchUrl(allImageIds);
+    const url = api.getDownloadBatchUrl(allImageIds, mode);
     const link = document.createElement('a');
     link.href = url;
     link.setAttribute('download', `ratio-studio-batch-${allImageIds.length}-images.zip`);
