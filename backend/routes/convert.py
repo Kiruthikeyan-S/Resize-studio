@@ -31,7 +31,7 @@ router = APIRouter(prefix="/api", tags=["convert"])
 
 class ConvertRequest(BaseModel):
     image_id: str
-    mode: str = Field(default="smart_crop", description="smart_crop, safe_fit, or manual_crop")
+    mode: str = Field(default="smart_crop", description="smart_crop, ai_expand, safe_fit, or manual_crop")
     export_format: str = Field(default="jpeg", description="jpeg, png, or webp")
     quality: int = Field(default=90, ge=1, le=100)
     bg_color_hex: str = Field(default="#F8FAFC")
@@ -92,10 +92,11 @@ async def convert_image(payload: ConvertRequest):
     Generate all 5 predefined aspect ratios for the uploaded image.
     Option A: Smart Crop (Professional full-frame crop, subject-centered, no blurred backgrounds).
     Option B: Safe Fit (Complete image preserved on clean solid studio background).
+    Option C: AI Background Expansion (Product-safe outpainting, zero pixel alteration).
     """
     validate_session_id(payload.image_id)
 
-    valid_modes = ["smart_crop", "safe_fit", "manual_crop", "fit_contain", "smart_fit"]
+    valid_modes = ["smart_crop", "ai_expand", "safe_fit", "manual_crop", "fit_contain", "smart_fit"]
     mode = payload.mode if payload.mode in valid_modes else "smart_crop"
 
     valid_formats = ["jpeg", "png", "webp"]

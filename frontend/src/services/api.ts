@@ -51,7 +51,7 @@ export interface RatioOutput {
 
 export interface ConvertSettings {
   image_id: string;
-  mode: 'smart_crop' | 'safe_fit' | 'manual_crop';
+  mode: 'smart_crop' | 'ai_expand' | 'safe_fit' | 'manual_crop';
   bg_color_hex: string;
   is_transparent: boolean;
   export_format: 'jpeg' | 'png' | 'webp';

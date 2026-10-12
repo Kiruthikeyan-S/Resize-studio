@@ -1,5 +1,5 @@
 import React, { useRef } from 'react';
-import { Plus, X, CheckCircle2, Clock, Images, Layers } from 'lucide-react';
+import { Plus, X, CheckCircle2, Clock, Images, Layers, Home } from 'lucide-react';
 import type { UploadResponse } from '../services/api';
 import { api } from '../services/api';
 
@@ -12,6 +12,7 @@ interface ImageQueueBarProps {
   imageOutputsMap: Record<string, any[]>;
   onBatchConvertAll?: () => void;
   isBatchConverting?: boolean;
+  onGoHome?: () => void;
 }
 
 export const ImageQueueBar: React.FC<ImageQueueBarProps> = ({
@@ -23,6 +24,7 @@ export const ImageQueueBar: React.FC<ImageQueueBarProps> = ({
   imageOutputsMap,
   onBatchConvertAll,
   isBatchConverting = false,
+  onGoHome,
 }) => {
   const addFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -102,6 +104,18 @@ export const ImageQueueBar: React.FC<ImageQueueBarProps> = ({
             <Plus className="w-3.5 h-3.5" />
             <span>Add More</span>
           </button>
+
+          {onGoHome && (
+            <button
+              type="button"
+              onClick={onGoHome}
+              className="py-1.5 px-3 rounded-xl bg-violet-50 hover:bg-violet-100 text-violet-700 font-semibold text-xs flex items-center gap-1.5 transition-colors cursor-pointer border border-violet-200 shadow-2xs"
+              title="Return to Home Screen to upload new images"
+            >
+              <Home className="w-3.5 h-3.5 text-violet-600" />
+              <span>Home Screen</span>
+            </button>
+          )}
         </div>
       </div>
 

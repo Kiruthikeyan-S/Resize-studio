@@ -29,7 +29,7 @@ export const App: React.FC = () => {
 
   const [settings, setSettings] = useState<ConvertSettings>({
     image_id: '',
-    mode: 'smart_crop',
+    mode: 'ai_expand',
     bg_color_hex: '#F8FAFC',
     is_transparent: false,
     export_format: 'jpeg',
@@ -186,10 +186,11 @@ export const App: React.FC = () => {
     setIsGenerating(true);
     setErrorMessage(null);
 
+    const activeMode = settings.mode || 'ai_expand';
     const activeSettings: ConvertSettings = {
       ...settings,
       image_id: updatedData.image_id,
-      mode: 'smart_crop',
+      mode: activeMode,
     };
 
     try {
@@ -198,7 +199,7 @@ export const App: React.FC = () => {
         ...prev,
         [updatedData.image_id]: {
           ...(prev[updatedData.image_id] || {}),
-          [settings.mode]: response.outputs,
+          [activeMode]: response.outputs,
         },
       }));
     } catch (err: any) {
@@ -225,7 +226,7 @@ export const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col selection:bg-violet-600 selection:text-white">
-      <Header />
+      <Header onGoHome={images.length > 0 ? handleReset : undefined} />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-10 space-y-8">
         {/* Intro Hero */}
@@ -276,6 +277,7 @@ export const App: React.FC = () => {
               imageOutputsMap={queueOutputsMap}
               onBatchConvertAll={handleBatchConvertAll}
               isBatchConverting={isBatchGenerating}
+              onGoHome={handleReset}
             />
 
             {/* Upper Section: Original Image Framing Editor & Compact Export Settings */}
@@ -306,15 +308,10 @@ export const App: React.FC = () => {
                     </h3>
                     <p className="text-xs text-slate-500">
                       {currentOutputs.length > 0
-                        ? 'All 5 standard commercial aspect ratios displayed side-by-side'
+                        ? 'All 5 commercial aspect ratios displayed side-by-side horizontally'
                         : 'Your framing will generate 5 ratios automatically across the width'}
                     </p>
                   </div>
-                  {currentOutputs.length > 0 && (
-                    <span className="text-xs font-mono font-medium text-emerald-700 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200 self-start sm:self-auto">
-                      5 Outputs Ready
-                    </span>
-                  )}
                 </div>
 
                 {/* Empty state before Apply & Update or when generating */}
@@ -327,7 +324,7 @@ export const App: React.FC = () => {
                       Generating 5 Ratios...
                     </p>
                     <p className="text-xs text-slate-500 max-w-md mx-auto">
-                      Applying your framing adjustments across Square, Portrait (4:5, 3:4), and Landscape (16:9, 5:4).
+                      Applying product-safe framing & seamless background continuation.
                     </p>
                   </div>
                 ) : currentOutputs.length === 0 ? (
@@ -360,15 +357,13 @@ export const App: React.FC = () => {
                       />
                     )}
 
-                    {/* All 5 Ratios in Horizontal Row Grid (5 columns on large screens) */}
+                    {/* All 5 Ratios in Horizontal Row Grid (5 columns side-by-side) */}
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
                       {currentOutputs.map((item) => (
                         <div key={item.safe_key} className="w-full">
                           <RatioCard
                             item={item}
                             imageId={activeImage.image_id}
-                            onUpdate={handleUpdateSingleRatio}
-                            onOpenCropEditor={(it: RatioOutput) => setEditingItem(it)}
                             onOpenPreviewModal={(it: RatioOutput) => setPreviewModalItem(it)}
                           />
                         </div>

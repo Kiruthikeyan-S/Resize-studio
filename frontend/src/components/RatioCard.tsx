@@ -1,35 +1,22 @@
-import React, { useRef, useState } from 'react';
-import { Download, RefreshCw, Crop, CheckCircle2, AlertCircle, Loader2, Maximize2 } from 'lucide-react';
+import React, { useState } from 'react';
+import { Download, Loader2, Maximize2 } from 'lucide-react';
 import type { RatioOutput } from '../services/api';
 import { api } from '../services/api';
 
 interface RatioCardProps {
   item: RatioOutput;
   imageId: string;
-  onUpdate: (updated: RatioOutput) => void;
-  onOpenCropEditor: (item: RatioOutput) => void;
+  onUpdate?: (updated: RatioOutput) => void;
+  onOpenCropEditor?: (item: RatioOutput) => void;
   onOpenPreviewModal: (item: RatioOutput) => void;
 }
 
 export const RatioCard: React.FC<RatioCardProps> = ({
   item,
   imageId,
-  onUpdate,
-  onOpenCropEditor,
   onOpenPreviewModal,
 }) => {
-  const [isReplacing, setIsReplacing] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [imageLoaded, setImageLoaded] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const formatBytes = (bytes: number) => {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-  };
 
   const handleDownload = () => {
     const url = api.getDownloadUrl(imageId, item.safe_key, item.mode);
@@ -41,36 +28,8 @@ export const RatioCard: React.FC<RatioCardProps> = ({
     document.body.removeChild(link);
   };
 
-  const handleReplaceFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files || e.target.files.length === 0) return;
-    const file = e.target.files[0];
-    setErrorMsg(null);
-    setIsReplacing(true);
-    try {
-      const updated = await api.replaceRatio(item.safe_key, imageId, file);
-      onUpdate(updated);
-      setImageLoaded(false);
-    } catch (err: any) {
-      setErrorMsg(err.response?.data?.detail || 'Failed to replace image.');
-    } finally {
-      setIsReplacing(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    }
-  };
-
-  const modeDisplayLabel = item.mode === 'safe_fit' ? 'Entire Image' : 'Full Frame';
-
   return (
     <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden flex flex-col justify-between shadow-xs hover:shadow-md hover:border-slate-300 transition-all group">
-      {/* Hidden file input for single image replacement */}
-      <input
-        type="file"
-        ref={fileInputRef}
-        onChange={handleReplaceFile}
-        accept="image/jpeg,image/png,image/webp"
-        className="hidden"
-      />
-
       {/* Card Header */}
       <div className="p-3.5 border-b border-slate-100 flex items-center justify-between bg-slate-50/70">
         <div>
@@ -80,11 +39,8 @@ export const RatioCard: React.FC<RatioCardProps> = ({
           </span>
         </div>
         <div className="flex items-center gap-1.5">
-          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-violet-100 text-violet-700 border border-violet-200">
+          <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-violet-100 text-violet-700 border border-violet-200 font-mono">
             {item.ratio_key}
-          </span>
-          <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-slate-200 text-slate-700">
-            {item.orientation}
           </span>
         </div>
       </div>
@@ -95,7 +51,7 @@ export const RatioCard: React.FC<RatioCardProps> = ({
         className="relative h-72 w-full bg-slate-100 p-3 flex items-center justify-center cursor-pointer overflow-hidden group/preview"
         title="Click to expand full preview"
       >
-        {(!imageLoaded || isReplacing) && (
+        {!imageLoaded && (
           <div className="absolute inset-0 flex items-center justify-center bg-white/70 z-10 backdrop-blur-xs">
             <Loader2 className="w-6 h-6 text-violet-600 animate-spin" />
           </div>
@@ -117,51 +73,8 @@ export const RatioCard: React.FC<RatioCardProps> = ({
         </div>
       </div>
 
-      {/* Card Footer */}
-      <div className="p-3.5 border-t border-slate-100 bg-white space-y-3">
-        {/* File Size & Processing Mode */}
-        <div className="flex items-center justify-between text-xs">
-          <span className="text-slate-600 flex items-center gap-1.5 font-medium">
-            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-            {formatBytes(item.file_size)}
-          </span>
-          <span className="text-[11px] font-semibold text-violet-700 bg-violet-50 px-2.5 py-0.5 rounded-full border border-violet-100">
-            {modeDisplayLabel}
-          </span>
-        </div>
-
-        {errorMsg && (
-          <div className="text-[11px] text-rose-600 flex items-center gap-1">
-            <AlertCircle className="w-3 h-3 shrink-0" />
-            <span>{errorMsg}</span>
-          </div>
-        )}
-
-        {/* Action Buttons */}
-        <div className="grid grid-cols-2 gap-2 pt-1">
-          <button
-            type="button"
-            onClick={() => onOpenCropEditor(item)}
-            className="py-2 px-2.5 rounded-xl bg-slate-50 hover:bg-slate-100 text-xs font-semibold text-slate-700 border border-slate-200 flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-            title="Adjust crop position"
-          >
-            <Crop className="w-3.5 h-3.5 text-violet-600" />
-            <span>Adjust Crop</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={isReplacing}
-            className="py-2 px-2.5 rounded-xl bg-slate-50 hover:bg-slate-100 text-xs font-semibold text-slate-700 border border-slate-200 flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
-            title="Replace image for this ratio only"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 text-slate-600 ${isReplacing ? 'animate-spin' : ''}`} />
-            <span>Replace</span>
-          </button>
-        </div>
-
-        {/* Download Button */}
+      {/* Card Footer - Only Download Button */}
+      <div className="p-3.5 border-t border-slate-100 bg-white">
         <button
           type="button"
           onClick={handleDownload}
@@ -174,3 +87,5 @@ export const RatioCard: React.FC<RatioCardProps> = ({
     </div>
   );
 };
+
+export default RatioCard;

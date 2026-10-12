@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Check, Crop, RotateCcw, Loader2, ZoomIn, Move } from 'lucide-react';
+import { X, Check, Crop, RotateCcw, Loader2, ZoomIn, Move, Home } from 'lucide-react';
 import type { UploadResponse } from '../services/api';
 import { api } from '../services/api';
 
@@ -172,15 +172,28 @@ export const OriginalCropEditor: React.FC<OriginalCropEditorProps> = ({
             </p>
           </div>
         </div>
-        {onClose && (
-          <button
-            onClick={onClose}
-            className="p-2 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 transition-colors cursor-pointer"
-            title="Cancel"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {onChangeImage && (
+            <button
+              type="button"
+              onClick={onChangeImage}
+              className="py-1.5 px-3 rounded-xl border border-slate-200 hover:border-violet-300 bg-white hover:bg-violet-50 text-slate-700 hover:text-violet-700 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+              title="Return to Home Screen to upload a new image"
+            >
+              <Home className="w-3.5 h-3.5 text-violet-600" />
+              <span>Home Screen</span>
+            </button>
+          )}
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="p-2 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 transition-colors cursor-pointer"
+              title="Cancel"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Live Visual Crop & Framing Canvas with Direct Pointer Drag */}

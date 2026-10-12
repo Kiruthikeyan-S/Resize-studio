@@ -2,6 +2,12 @@
 
 import os
 from contextlib import asynccontextmanager
+
+try:
+    import dotenv
+    dotenv.load_dotenv()
+except Exception:
+    pass
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routes.upload import router as upload_router

@@ -473,4 +473,39 @@ def test_original_image_framing_update_and_generation():
     assert reset_data["is_cropped_master"] is False
 
 
+def test_ai_background_expansion_all_ratios_exact_dimensions():
+    """Verify AI Background Expansion produces all 5 exact commercial target resolutions without stretching."""
+    img_bytes = create_sample_image("JPEG", (1200, 1200), color=(140, 110, 80))
+    upload_res = client.post("/api/upload", files={"file": ("jewellery_set.jpg", img_bytes, "image/jpeg")})
+    assert upload_res.status_code == 200
+    image_id = upload_res.json()["image_id"]
+
+    convert_res = client.post("/api/convert", json={"image_id": image_id, "mode": "ai_expand"})
+    assert convert_res.status_code == 200
+    data = convert_res.json()
+    assert data["mode"] == "ai_expand"
+    assert len(data["outputs"]) == 5
+
+    expected_sizes = {
+        "square_1x1": (2048, 2048),
+        "portrait_4x5": (1600, 2000),
+        "portrait_3x4": (1536, 2048),
+        "landscape_16x9": (2560, 1440),
+        "landscape_5x4": (2000, 1600),
+    }
+
+    for item in data["outputs"]:
+        assert item["mode"] == "ai_expand"
+        expected_w, expected_h = expected_sizes[item["safe_key"]]
+        assert item["width"] == expected_w
+        assert item["height"] == expected_h
+
+        # Verify downloaded image matches exact dimensions
+        down_res = client.get(f"/api/download/{image_id}/{item['safe_key']}?mode=ai_expand")
+        assert down_res.status_code == 200
+        dl_img = Image.open(io.BytesIO(down_res.content))
+        assert dl_img.size == (expected_w, expected_h)
+
+
+
 
