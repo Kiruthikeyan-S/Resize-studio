@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from services.validator import validate_session_id
 from services.image_processor import get_image_session_dirs
-from services.zip_generator import create_zip_archive
+from services.zip_generator import create_zip_archive, create_multi_session_zip_archive
 from services.crop_engine import RATIO_CONFIGS, resolve_ratio_config
 
 router = APIRouter(prefix="/api", tags=["download"])
@@ -146,3 +146,30 @@ async def download_all_zip(image_id: str):
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{archive_filename}"'}
     )
+
+
+@router.get("/download-batch")
+async def download_batch_zip(image_ids: str = Query(..., description="Comma-separated image IDs")):
+    """
+    Download a master ZIP archive containing ratio conversions for all specified images.
+    Organizes each image's 5 outputs into their own subfolder.
+    """
+    ids = [i.strip() for i in image_ids.split(",") if i.strip()]
+    if not ids:
+        raise HTTPException(status_code=400, detail="No image IDs specified.")
+
+    for i in ids:
+        validate_session_id(i)
+
+    try:
+        zip_stream = create_multi_session_zip_archive(ids)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate batch archive: {str(e)}")
+
+    archive_filename = f"ratio-studio-batch-{len(ids)}-images.zip"
+    return StreamingResponse(
+        zip_stream,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{archive_filename}"'}
+    )
+

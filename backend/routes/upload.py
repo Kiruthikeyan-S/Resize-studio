@@ -23,6 +23,8 @@ from services.image_processor import (
     cleanup_old_sessions,
 )
 
+from typing import List
+
 router = APIRouter(prefix="/api", tags=["upload"])
 
 
@@ -35,17 +37,10 @@ class UploadResponse(BaseModel):
     format: str
     mode: str
     original_url: str
+    is_low_res: bool = False
 
 
-@router.post("/upload", response_model=UploadResponse)
-async def upload_image(file: UploadFile = File(...)):
-    """
-    Accept and validate an image upload.
-    Validates MIME type, file size during streaming, and actual image content using Pillow.
-    Returns safe image_id and original metadata.
-    """
-    cleanup_old_sessions(max_age_seconds=3600)
-
+async def _process_single_upload(file: UploadFile) -> UploadResponse:
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file selected.")
 
@@ -105,7 +100,41 @@ async def upload_image(file: UploadFile = File(...)):
         format=meta["format"],
         mode=meta["mode"],
         original_url=f"/api/original/{image_id}",
+        is_low_res=meta.get("is_low_res", False)
     )
+
+
+@router.post("/upload", response_model=UploadResponse)
+async def upload_image(file: UploadFile = File(...)):
+    """Accept and validate a single image upload."""
+    cleanup_old_sessions(max_age_seconds=3600)
+    return await _process_single_upload(file)
+
+
+@router.post("/upload-multiple", response_model=List[UploadResponse])
+async def upload_multiple_images(files: List[UploadFile] = File(...)):
+    """Accept and validate multiple image uploads in batch."""
+    if not files:
+        raise HTTPException(status_code=400, detail="No files selected.")
+
+    cleanup_old_sessions(max_age_seconds=3600)
+    results: List[UploadResponse] = []
+    errors: List[str] = []
+
+    for f in files:
+        if not f.filename:
+            continue
+        try:
+            res = await _process_single_upload(f)
+            results.append(res)
+        except Exception as e:
+            detail = getattr(e, "detail", str(e))
+            errors.append(f"{f.filename}: {detail}")
+
+    if not results and errors:
+        raise HTTPException(status_code=422, detail="; ".join(errors))
+
+    return results
 
 
 @router.get("/original/{image_id}")

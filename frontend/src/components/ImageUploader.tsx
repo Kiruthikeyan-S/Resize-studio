@@ -5,7 +5,7 @@ import type { UploadResponse } from '../services/api';
 import { api } from '../services/api';
 
 interface ImageUploaderProps {
-  onUploadSuccess: (data: UploadResponse) => void;
+  onUploadSuccess: (data: UploadResponse[]) => void;
   isLoading: boolean;
   setIsLoading: (loading: boolean) => void;
 }
@@ -17,31 +17,50 @@ export const ImageUploader: React.FC<ImageUploaderProps> = ({
 }) => {
   const [isDragOver, setIsDragOver] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleFile = async (file: File) => {
+  const handleFiles = async (filesList: FileList | File[]) => {
     setErrorMessage(null);
+    setUploadStatus(null);
 
+    const validFiles: File[] = [];
     const validExtensions = ['image/jpeg', 'image/png', 'image/webp'];
-    if (!validExtensions.includes(file.type) && !/\.(jpg|jpeg|png|webp)$/i.test(file.name)) {
-      setErrorMessage('Unsupported file format. Please upload JPEG, PNG, or WebP.');
-      return;
+
+    for (let i = 0; i < filesList.length; i++) {
+      const file = filesList[i];
+      if (!validExtensions.includes(file.type) && !/\.(jpg|jpeg|png|webp)$/i.test(file.name)) {
+        continue;
+      }
+      if (file.size > 20 * 1024 * 1024) {
+        continue;
+      }
+      validFiles.push(file);
     }
 
-    if (file.size > 20 * 1024 * 1024) {
-      setErrorMessage(`File exceeds 20MB limit (${(file.size / (1024 * 1024)).toFixed(1)}MB).`);
+    if (validFiles.length === 0) {
+      setErrorMessage('No valid JPEG, PNG, or WebP images found (max 20 MB per file).');
       return;
     }
 
     try {
       setIsLoading(true);
-      const data = await api.uploadImage(file);
-      onUploadSuccess(data);
+      setUploadStatus(validFiles.length > 1 ? `Uploading ${validFiles.length} images...` : 'Uploading image...');
+      
+      if (validFiles.length === 1) {
+        const single = await api.uploadImage(validFiles[0]);
+        onUploadSuccess([single]);
+      } else {
+        const batch = await api.uploadMultipleImages(validFiles);
+        onUploadSuccess(batch);
+      }
     } catch (err: any) {
-      const msg = err.response?.data?.detail || err.message || 'Failed to upload image.';
+      const msg = err.response?.data?.detail || err.message || 'Failed to upload image(s).';
       setErrorMessage(msg);
     } finally {
       setIsLoading(false);
+      setUploadStatus(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
@@ -59,13 +78,13 @@ export const ImageUploader: React.FC<ImageUploaderProps> = ({
     e.preventDefault();
     setIsDragOver(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      handleFile(e.dataTransfer.files[0]);
+      handleFiles(e.dataTransfer.files);
     }
   };
 
   const onFileSelect = (e: ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      handleFile(e.target.files[0]);
+      handleFiles(e.target.files);
     }
   };
 
@@ -87,6 +106,7 @@ export const ImageUploader: React.FC<ImageUploaderProps> = ({
           ref={fileInputRef}
           onChange={onFileSelect}
           accept="image/jpeg,image/png,image/webp"
+          multiple
           className="hidden"
         />
 
@@ -99,17 +119,20 @@ export const ImageUploader: React.FC<ImageUploaderProps> = ({
         </div>
 
         <h3 className="text-lg font-semibold text-slate-900 mb-1">
-          {isLoading ? 'Processing image upload...' : 'Upload your image'}
+          {uploadStatus || 'Upload your image(s)'}
         </h3>
         <p className="text-sm text-slate-500 max-w-md mb-4">
-          Drag & drop your file here, or{' '}
+          Drag & drop single or multiple files here, or{' '}
           <span className="text-violet-600 font-medium underline underline-offset-2">browse files</span>
         </p>
 
         <div className="flex flex-wrap items-center justify-center gap-2 text-xs text-slate-500">
+          <span className="px-2.5 py-1 rounded-md bg-violet-50 text-violet-700 font-medium border border-violet-200">
+            Multiple Upload Supported
+          </span>
           <span className="px-2.5 py-1 rounded-md bg-slate-100 border border-slate-200">JPEG, PNG, WebP</span>
-          <span className="px-2.5 py-1 rounded-md bg-slate-100 border border-slate-200">Up to 20 MB</span>
-          <span className="px-2.5 py-1 rounded-md bg-slate-100 border border-slate-200">High-Resolution Support</span>
+          <span className="px-2.5 py-1 rounded-md bg-slate-100 border border-slate-200">Up to 20 MB each</span>
+          <span className="px-2.5 py-1 rounded-md bg-slate-100 border border-slate-200">Batch Processing</span>
         </div>
       </div>
 

@@ -91,6 +91,15 @@ export const api = {
     return response.data;
   },
 
+  async uploadMultipleImages(files: File[]): Promise<UploadResponse[]> {
+    const formData = new FormData();
+    files.forEach((f) => formData.append('files', f));
+    const response = await axios.post<UploadResponse[]>(`${API_BASE}/upload-multiple`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return response.data;
+  },
+
   async convertImage(settings: ConvertSettings): Promise<ConvertResponse> {
     const response = await axios.post<ConvertResponse>(`${API_BASE}/convert`, settings);
     return response.data;
@@ -150,6 +159,10 @@ export const api = {
 
   getDownloadAllUrl(imageId: string): string {
     return `${API_BASE}/download-all/${imageId}`;
+  },
+
+  getDownloadBatchUrl(imageIds: string[]): string {
+    return `${API_BASE}/download-batch?image_ids=${imageIds.join(',')}`;
   },
 
   getFullPreviewUrl(imageId: string, safeKey: string, version: number = 1): string {

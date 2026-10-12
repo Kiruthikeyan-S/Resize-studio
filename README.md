@@ -24,6 +24,12 @@ Every output is generated with mathematical precision according to standard prod
 
 ## ⚡ Core Features & Capabilities
 
+- **Multiple Image Upload & Batch Queue**:
+  - Drag-and-drop or select multiple images simultaneously (`POST /api/upload-multiple`).
+  - Interactive multi-image queue bar showing live thumbnails, dimensions, and readiness status.
+  - One-click **"Convert All Images"** to batch-generate all 5 ratios across all uploaded files.
+  - Multi-image **Batch ZIP Package** (`GET /api/download-batch`) organizing outputs into labeled subfolders with a master `manifest.json`.
+  - Add more images to the active queue dynamically at any time.
 - **Two Clear Processing Options**:
   1. **Full-Frame Photo (Default)**: Multi-cue subject-aware Smart Crop combining spectral saliency, Canny edge detection, and morphological bounding contours. Anchors directly on the main subject (vehicles, products, portraits) to maximize subject prominence while preserving accurate proportions. If extreme aspect ratio shift (e.g. wide vehicle into narrow portrait 4:5 or 3:4) would clip vehicle wheels or bumpers, the engine automatically falls back to Safe Fit to safeguard the complete subject.
   2. **Entire Image Visible (Safe Fit)**: Preserves 100% of the image on a clean solid studio background (Pure White, Light Gray, Dark Slate, Pitch Black, or custom hex color).
@@ -151,7 +157,7 @@ Open `http://localhost:5173` in your browser.
 
 ## 🧪 Automated Testing
 
-### Backend Tests (21 Automated Tests)
+### Backend Tests (22 Automated Tests)
 Run the full regression test suite:
 ```powershell
 cd backend

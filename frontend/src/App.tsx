@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Header } from './components/Header';
 import { ImageUploader } from './components/ImageUploader';
+import { ImageQueueBar } from './components/ImageQueueBar';
 import { OriginalPreview } from './components/OriginalPreview';
 import { ConversionSettings } from './components/ConversionSettings';
 import { PreviewGrid } from './components/PreviewGrid';
@@ -12,10 +13,12 @@ import { api } from './services/api';
 import { AlertCircle } from 'lucide-react';
 
 export const App: React.FC = () => {
-  const [originalData, setOriginalData] = useState<UploadResponse | null>(null);
+  const [images, setImages] = useState<UploadResponse[]>([]);
+  const [activeImageId, setActiveImageId] = useState<string>('');
+  const [outputsMap, setOutputsMap] = useState<Record<string, RatioOutput[]>>({});
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
-  const [outputs, setOutputs] = useState<RatioOutput[]>([]);
+  const [isBatchGenerating, setIsBatchGenerating] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [editingItem, setEditingItem] = useState<RatioOutput | null>(null);
   const [previewModalItem, setPreviewModalItem] = useState<RatioOutput | null>(null);
@@ -31,45 +34,100 @@ export const App: React.FC = () => {
     denoise: false,
   });
 
-  const handleUploadSuccess = (data: UploadResponse) => {
-    setOriginalData(data);
-    setOutputs([]);
+  const activeImage = images.find((img) => img.image_id === activeImageId) || images[0] || null;
+  const currentOutputs = activeImage ? (outputsMap[activeImage.image_id] || []) : [];
+
+  const handleUploadSuccess = (uploadedList: UploadResponse[]) => {
+    setImages((prev) => {
+      const combined = [...prev, ...uploadedList];
+      return combined;
+    });
+
+    if (!activeImageId && uploadedList.length > 0) {
+      setActiveImageId(uploadedList[0].image_id);
+      setSettings((prev) => ({
+        ...prev,
+        image_id: uploadedList[0].image_id,
+      }));
+    }
     setErrorMessage(null);
+  };
+
+  const handleSelectImage = (imageId: string) => {
+    setActiveImageId(imageId);
     setSettings((prev) => ({
       ...prev,
-      image_id: data.image_id,
+      image_id: imageId,
     }));
   };
 
+  const handleRemoveImage = async (imageId: string) => {
+    const remaining = images.filter((img) => img.image_id !== imageId);
+    setImages(remaining);
+
+    setOutputsMap((prev) => {
+      const copy = { ...prev };
+      delete copy[imageId];
+      return copy;
+    });
+
+    if (activeImageId === imageId) {
+      if (remaining.length > 0) {
+        setActiveImageId(remaining[0].image_id);
+        setSettings((prev) => ({ ...prev, image_id: remaining[0].image_id }));
+      } else {
+        setActiveImageId('');
+      }
+    }
+
+    try {
+      await api.deleteSession(imageId);
+    } catch {
+      // Ignore background delete errors
+    }
+  };
+
+  const handleAddImages = (newImages: UploadResponse[]) => {
+    setImages((prev) => [...prev, ...newImages]);
+    if (!activeImageId && newImages.length > 0) {
+      setActiveImageId(newImages[0].image_id);
+      setSettings((prev) => ({ ...prev, image_id: newImages[0].image_id }));
+    }
+  };
+
   const handleReset = async () => {
-    if (originalData) {
+    for (const img of images) {
       try {
-        await api.deleteSession(originalData.image_id);
-      } catch (err) {
+        await api.deleteSession(img.image_id);
+      } catch {
         // Ignore session delete errors on reset
       }
     }
-    setOriginalData(null);
-    setOutputs([]);
+    setImages([]);
+    setActiveImageId('');
+    setOutputsMap({});
     setErrorMessage(null);
     setEditingItem(null);
     setPreviewModalItem(null);
   };
 
   const handleGenerate = async (customMode?: 'smart_crop' | 'safe_fit' | 'manual_crop') => {
-    if (!originalData) return;
+    if (!activeImage) return;
     setIsGenerating(true);
     setErrorMessage(null);
 
-    const activeSettings = {
+    const activeSettings: ConvertSettings = {
       ...settings,
-      image_id: originalData.image_id,
+      image_id: activeImage.image_id,
       mode: customMode || settings.mode,
     };
 
     try {
       const response = await api.convertImage(activeSettings);
-      setOutputs(response.outputs);
+      setOutputsMap((prev) => ({
+        ...prev,
+        [activeImage.image_id]: response.outputs,
+      }));
     } catch (err: any) {
       setErrorMessage(
         err.response?.data?.detail || err.message || 'Failed to generate aspect ratios.'
@@ -79,16 +137,53 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleBatchConvertAll = async () => {
+    if (images.length === 0) return;
+    setIsBatchGenerating(true);
+    setErrorMessage(null);
+
+    const newOutputsMap = { ...outputsMap };
+
+    for (const img of images) {
+      const imageSettings: ConvertSettings = {
+        ...settings,
+        image_id: img.image_id,
+      };
+
+      try {
+        const response = await api.convertImage(imageSettings);
+        newOutputsMap[img.image_id] = response.outputs;
+        setOutputsMap({ ...newOutputsMap });
+      } catch (err: any) {
+        console.error(`Failed to convert ${img.original_filename}:`, err);
+      }
+    }
+
+    setIsBatchGenerating(false);
+  };
+
   const handleSwitchToSafeFit = () => {
     setSettings((prev) => ({ ...prev, mode: 'safe_fit' }));
     handleGenerate('safe_fit');
   };
 
   const handleUpdateSingleRatio = (updated: RatioOutput) => {
-    setOutputs((prev) =>
-      prev.map((item) => (item.safe_key === updated.safe_key ? updated : item))
-    );
+    if (!activeImage) return;
+    setOutputsMap((prev) => {
+      const existing = prev[activeImage.image_id] || [];
+      const updatedList = existing.map((item) =>
+        item.safe_key === updated.safe_key ? updated : item
+      );
+      return {
+        ...prev,
+        [activeImage.image_id]: updatedList,
+      };
+    });
   };
+
+  const convertedImagesCount = images.filter(
+    (img) => (outputsMap[img.image_id]?.length || 0) > 0
+  ).length;
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col selection:bg-violet-600 selection:text-white">
@@ -100,6 +195,9 @@ export const App: React.FC = () => {
           <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-slate-900">
             Professional Image Ratio Converter
           </h1>
+          <p className="text-sm text-slate-500 max-w-xl mx-auto">
+            Batch-convert single or multiple images into 5 standard high-resolution aspect ratios with precision framing.
+          </p>
         </div>
 
         {/* Global Error Alert */}
@@ -119,8 +217,8 @@ export const App: React.FC = () => {
           </div>
         )}
 
-        {/* Upload or Original Image Preview Section */}
-        {!originalData ? (
+        {/* Upload or Multi-Image Workspace Section */}
+        {images.length === 0 ? (
           <div className="max-w-2xl mx-auto">
             <ImageUploader
               onUploadSuccess={handleUploadSuccess}
@@ -130,26 +228,49 @@ export const App: React.FC = () => {
           </div>
         ) : (
           <div className="space-y-6">
-            <OriginalPreview originalData={originalData} onReset={handleReset} />
+            {/* Multi-Image Queue Bar */}
+            <ImageQueueBar
+              images={images}
+              activeImageId={activeImageId}
+              onSelectImage={handleSelectImage}
+              onRemoveImage={handleRemoveImage}
+              onAddImages={handleAddImages}
+              imageOutputsMap={outputsMap}
+              onBatchConvertAll={handleBatchConvertAll}
+              isBatchConverting={isBatchGenerating}
+            />
 
+            {/* Active Image Source Preview */}
+            {activeImage && (
+              <OriginalPreview originalData={activeImage} onReset={handleReset} />
+            )}
+
+            {/* Conversion Controls */}
             <ConversionSettings
               settings={settings}
               setSettings={setSettings}
               onGenerate={() => handleGenerate()}
               isGenerating={isGenerating}
+              totalImagesCount={images.length}
+              onBatchGenerateAll={handleBatchConvertAll}
+              isBatchGenerating={isBatchGenerating}
             />
 
             {/* Output Grid and ZIP Download */}
-            {outputs.length > 0 && (
+            {currentOutputs.length > 0 && activeImage && (
               <div className="space-y-6 pt-4 animate-fade-in">
                 <DownloadAll
-                  imageId={originalData.image_id}
-                  totalOutputs={outputs.length}
+                  imageId={activeImage.image_id}
+                  totalOutputs={currentOutputs.length}
+                  allImageIds={images
+                    .filter((img) => (outputsMap[img.image_id]?.length || 0) > 0)
+                    .map((img) => img.image_id)}
+                  totalConvertedImages={convertedImagesCount}
                 />
 
                 <PreviewGrid
-                  outputs={outputs}
-                  imageId={originalData.image_id}
+                  outputs={currentOutputs}
+                  imageId={activeImage.image_id}
                   onUpdateRatio={handleUpdateSingleRatio}
                   onOpenCropEditor={(item) => setEditingItem(item)}
                   onOpenPreviewModal={(item) => setPreviewModalItem(item)}
@@ -228,24 +349,23 @@ export const App: React.FC = () => {
       </main>
 
       {/* Interactive Crop Modal */}
-      {editingItem && (
+      {editingItem && activeImage && (
         <CropEditor
           item={editingItem}
-          originalData={originalData}
+          originalData={activeImage}
           onClose={() => setEditingItem(null)}
           onSave={handleUpdateSingleRatio}
         />
       )}
 
       {/* Full-screen Inspection Modal */}
-      {previewModalItem && originalData && (
+      {previewModalItem && activeImage && (
         <PreviewModal
           item={previewModalItem}
-          imageId={originalData.image_id}
+          imageId={activeImage.image_id}
           onClose={() => setPreviewModalItem(null)}
         />
       )}
-
     </div>
   );
 };

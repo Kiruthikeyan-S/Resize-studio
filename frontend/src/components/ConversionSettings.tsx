@@ -1,5 +1,4 @@
-import React from 'react';
-import { Sliders, Maximize2, Shield, Play, Palette, Check } from 'lucide-react';
+import { Sliders, Maximize2, Shield, Play, Palette, Check, Sparkles } from 'lucide-react';
 import type { ConvertSettings } from '../services/api';
 
 interface ConversionSettingsProps {
@@ -7,6 +6,9 @@ interface ConversionSettingsProps {
   setSettings: React.Dispatch<React.SetStateAction<ConvertSettings>>;
   onGenerate: () => void;
   isGenerating: boolean;
+  totalImagesCount?: number;
+  onBatchGenerateAll?: () => void;
+  isBatchGenerating?: boolean;
 }
 
 export const ConversionSettings: React.FC<ConversionSettingsProps> = ({
@@ -14,6 +16,9 @@ export const ConversionSettings: React.FC<ConversionSettingsProps> = ({
   setSettings,
   onGenerate,
   isGenerating,
+  totalImagesCount = 1,
+  onBatchGenerateAll,
+  isBatchGenerating = false,
 }) => {
   const options = [
     {
@@ -293,25 +298,48 @@ export const ConversionSettings: React.FC<ConversionSettingsProps> = ({
       </div>
 
       {/* Action CTA */}
-      <div className="pt-2">
+      <div className="pt-2 flex flex-col sm:flex-row items-center gap-3">
         <button
           type="button"
           onClick={onGenerate}
-          disabled={isGenerating}
-          className="w-full py-3.5 px-6 rounded-xl bg-violet-600 hover:bg-violet-700 text-white font-semibold text-sm shadow-md shadow-violet-200 flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50 disabled:pointer-events-none active:scale-[0.99]"
+          disabled={isGenerating || isBatchGenerating}
+          className="flex-1 w-full py-3.5 px-6 rounded-xl bg-violet-600 hover:bg-violet-700 text-white font-semibold text-sm shadow-md shadow-violet-200 flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50 disabled:pointer-events-none active:scale-[0.99]"
         >
           {isGenerating ? (
             <>
               <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-              <span>Generating 5 Aspect Ratios...</span>
+              <span>Generating Ratios...</span>
             </>
           ) : (
             <>
               <Play className="w-4 h-4 fill-white" />
-              <span>Generate 5 Aspect Ratios</span>
+              <span>
+                {totalImagesCount > 1 ? 'Generate Ratios (Active Image)' : 'Generate 5 Aspect Ratios'}
+              </span>
             </>
           )}
         </button>
+
+        {totalImagesCount > 1 && onBatchGenerateAll && (
+          <button
+            type="button"
+            onClick={onBatchGenerateAll}
+            disabled={isGenerating || isBatchGenerating}
+            className="flex-1 w-full py-3.5 px-6 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-semibold text-sm shadow-md flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50 disabled:pointer-events-none active:scale-[0.99]"
+          >
+            {isBatchGenerating ? (
+              <>
+                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                <span>Converting All {totalImagesCount} Images...</span>
+              </>
+            ) : (
+              <>
+                <Sparkles className="w-4 h-4 text-violet-300" />
+                <span>Convert All {totalImagesCount} Images</span>
+              </>
+            )}
+          </button>
+        )}
       </div>
     </div>
   );
