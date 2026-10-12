@@ -303,3 +303,40 @@ def test_groq_vision_endpoint_fallback():
     data = res.json()
     assert "enabled" in data
 
+
+def test_wide_vehicle_automatic_safe_fit_fallback():
+    """Verify wide car subject automatically triggers Safe Fit fallback on extreme portrait ratios."""
+    # Create an image with a wide high-contrast subject (like a car spanning wide x-range)
+    # Background: white (245, 245, 245), Subject: high-contrast dark rectangle spanning 85% width
+    img = Image.new("RGB", (1600, 600), (245, 245, 245))
+    # Draw a prominent dark subject box from x=100 to x=1500, y=150 to y=450
+    from PIL import ImageDraw
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([100, 150, 1500, 450], fill=(20, 30, 40))
+    
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=95)
+    img_bytes = buf.getvalue()
+
+    upload_res = client.post("/api/upload", files={"file": ("wide_car.jpg", img_bytes, "image/jpeg")})
+    assert upload_res.status_code == 200
+    image_id = upload_res.json()["image_id"]
+
+    convert_res = client.post("/api/convert", json={"image_id": image_id, "mode": "smart_crop"})
+    assert convert_res.status_code == 200
+    data = convert_res.json()
+
+    # Find portrait_4x5 and portrait_3x4 outputs
+    portrait_4x5 = next(item for item in data["outputs"] if item["safe_key"] == "portrait_4x5")
+    portrait_3x4 = next(item for item in data["outputs"] if item["safe_key"] == "portrait_3x4")
+
+    # Due to extreme aspect ratio shift (1600x600 -> 4:5 or 3:4), the wide vehicle would lose > 50% width.
+    # The automatic fallback should switch mode to safe_fit to prevent cutting off car ends
+    assert portrait_4x5["mode"] == "safe_fit"
+    assert portrait_4x5["fallback_reason"] is not None
+    assert "preserved" in portrait_4x5["fallback_reason"].lower()
+
+    assert portrait_3x4["mode"] == "safe_fit"
+    assert portrait_3x4["fallback_reason"] is not None
+
+

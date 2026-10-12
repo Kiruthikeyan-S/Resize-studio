@@ -69,6 +69,7 @@ class OutputRatioItem(BaseModel):
     mode: str
     edges_trimmed: Optional[bool] = False
     fit_info: Optional[FitInfoItem] = None
+    fallback_reason: Optional[str] = None
 
 
 class ConvertResponse(BaseModel):

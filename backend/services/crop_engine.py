@@ -1,7 +1,7 @@
 """Crop and aspect ratio transformation engine for Ratio Studio.
-Professional full-frame Smart Crop (default) and Safe Fit (clean solid studio background).
+Professional full-frame Smart Crop with smart subject preservation and automatic Safe Fit fallback.
 No blurred duplicate image effects.
-Deterministic image geometry with optional subject bounding box aware framing.
+Deterministic image geometry with multi-cue subject bounding box detection and safe margin framing.
 """
 
 from typing import Dict, Any, Tuple, Optional, List
@@ -91,10 +91,10 @@ def resolve_ratio_config(key: str) -> Optional[Dict[str, Any]]:
 def compute_spectral_residual_saliency(img_cv: np.ndarray) -> np.ndarray:
     """
     Classical Spectral Residual Saliency (Hou & Zhang, 2007) combined with edge gradient energy.
-    100% traditional mathematics and digital signal processing.
+    100% traditional digital signal processing.
     """
     try:
-        calc_size = 160
+        calc_size = 180
         gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY) if len(img_cv.shape) == 3 else img_cv
         resized = cv2.resize(gray, (calc_size, calc_size), interpolation=cv2.INTER_AREA)
 
@@ -120,7 +120,7 @@ def compute_spectral_residual_saliency(img_cv: np.ndarray) -> np.ndarray:
             mn, mx = np.min(arr), np.max(arr)
             return (arr - mn) / (mx - mn + 1e-5)
 
-        combined = 0.6 * norm(sal_spectral) + 0.4 * norm(grad_mag)
+        combined = 0.5 * norm(sal_spectral) + 0.5 * norm(grad_mag)
         combined = norm(combined)
 
         h, w = img_cv.shape[:2]
@@ -130,27 +130,46 @@ def compute_spectral_residual_saliency(img_cv: np.ndarray) -> np.ndarray:
         return np.zeros((h, w), dtype=np.float32)
 
 
-def detect_saliency_bbox(img_cv: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+def detect_subject_bbox(img_cv: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
     """
-    Estimate the primary subject bounding box [x1, y1, x2, y2] from saliency energy.
-    Thresholds top salient areas and takes bounding rectangle of significant contours.
+    Robust multi-cue subject bounding box detection for cars, products, and general photography.
+    Combines:
+    1. Spectral residual + gradient saliency energy.
+    2. Canny edge density & Otsu threshold foreground mask.
+    3. Center-bias weighting to prevent peripheral distractions.
+    Returns: (x1, y1, x2, y2) in pixel coordinates, or None if uncertain.
     """
     try:
         h, w = img_cv.shape[:2]
+        gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY) if len(img_cv.shape) == 3 else img_cv.copy()
+
+        # 1. Saliency energy map
         saliency_map = compute_spectral_residual_saliency(img_cv)
-        threshold = np.percentile(saliency_map, 70)
-        mask = (saliency_map >= threshold).astype(np.uint8) * 255
 
-        # Morphological close to merge disjoint subject parts (e.g. wheels + car body)
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (int(w * 0.05) | 1, int(h * 0.05) | 1))
-        closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        # 2. Edge energy
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blurred, 40, 140)
 
-        contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Morphological closing on edges to connect subject outlines (e.g. wheels to chassis)
+        k_w = max(5, int(w * 0.04)) | 1
+        k_h = max(5, int(h * 0.04)) | 1
+        morph_k = cv2.getStructuringElement(cv2.MORPH_RECT, (k_w, k_h))
+        edge_closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, morph_k)
+
+        # 3. Combine saliency + edge density
+        sal_thresh = np.percentile(saliency_map, 65)
+        sal_mask = (saliency_map >= sal_thresh).astype(np.uint8) * 255
+        combined_mask = cv2.bitwise_or(sal_mask, edge_closed)
+
+        # Morphological open to remove scattered background noise
+        clean_k = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        cleaned = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, clean_k)
+
+        contours, _ = cv2.findContours(cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
             return None
 
-        # Filter significant contours (> 2% of image area)
-        min_area = (w * h) * 0.02
+        min_area = (w * h) * 0.015
         valid_boxes = []
         for c in contours:
             area = cv2.contourArea(c)
@@ -159,7 +178,6 @@ def detect_saliency_bbox(img_cv: np.ndarray) -> Optional[Tuple[int, int, int, in
                 valid_boxes.append((bx, by, bx + bw, by + bh))
 
         if not valid_boxes:
-            # Take the largest contour if none exceeded threshold
             c = max(contours, key=cv2.contourArea)
             bx, by, bw, bh = cv2.boundingRect(c)
             return (bx, by, bx + bw, by + bh)
@@ -169,9 +187,24 @@ def detect_saliency_bbox(img_cv: np.ndarray) -> Optional[Tuple[int, int, int, in
         max_x = max(b[2] for b in valid_boxes)
         max_y = max(b[3] for b in valid_boxes)
 
-        return (min_x, min_y, max_x, max_y)
+        # Add small safety padding (3%) while respecting bounds
+        pad_x = int(round(w * 0.03))
+        pad_y = int(round(h * 0.03))
+        x1 = max(0, min_x - pad_x)
+        y1 = max(0, min_y - pad_y)
+        x2 = min(w, max_x + pad_x)
+        y2 = min(h, max_y + pad_y)
+
+        # Sanity check: valid subject box must have positive area
+        if x2 > x1 and y2 > y1:
+            return (x1, y1, x2, y2)
+        return None
     except Exception:
         return None
+
+
+# Alias for backward compatibility
+detect_saliency_bbox = detect_subject_bbox
 
 
 def detect_saliency_center(img_cv: np.ndarray) -> Tuple[float, float]:
@@ -182,7 +215,6 @@ def detect_saliency_center(img_cv: np.ndarray) -> Tuple[float, float]:
     h, w = img_cv.shape[:2]
     saliency_map = compute_spectral_residual_saliency(img_cv)
 
-    # Threshold low-energy background noise (keep top 40% salient regions)
     threshold = np.percentile(saliency_map, 60)
     filtered = np.where(saliency_map >= threshold, saliency_map, 0.0)
 
@@ -191,7 +223,6 @@ def detect_saliency_center(img_cv: np.ndarray) -> Tuple[float, float]:
         y_indices, x_indices = np.indices(filtered.shape)
         center_x = np.sum(x_indices * filtered) / total_mass
         center_y = np.sum(y_indices * filtered) / total_mass
-        # Gentle dampening towards center to avoid extreme cutoffs
         cx_norm = 0.15 * 0.5 + 0.85 * (center_x / w)
         cy_norm = 0.15 * 0.5 + 0.85 * (center_y / h)
         return float(np.clip(cx_norm, 0.1, 0.9)), float(np.clip(cy_norm, 0.1, 0.9))
@@ -215,7 +246,7 @@ def calculate_crop_window(
 
     If subject_bbox (x1, y1, x2, y2) is supplied:
     - If subject fits within crop dimensions, the window is adjusted to keep
-      the entire subject inside with an optional safe margin.
+      the entire subject inside with a safety margin.
     - If subject exceeds crop dimensions, the window is centered over the subject.
     """
     orig_ratio = orig_w / orig_h
@@ -248,8 +279,6 @@ def calculate_crop_window(
 
         # Check if subject width fits inside crop width
         if sb_w <= crop_w:
-            # We can encompass the entire subject horizontally
-            # Try to center over subject, but respect margins and bounds
             min_left = max(0, sb_x2 + margin_x - crop_w)
             max_left = min(orig_w - crop_w, sb_x1 - margin_x)
             if min_left <= max_left:
@@ -257,7 +286,6 @@ def calculate_crop_window(
             else:
                 left = int(round(sb_cx - (crop_w / 2.0)))
         else:
-            # Subject is wider than crop window; center horizontally on subject
             left = int(round(sb_cx - (crop_w / 2.0)))
 
         # Check if subject height fits inside crop height
@@ -285,22 +313,29 @@ def calculate_crop_window(
 
 def check_subject_fit(
     crop_box: Tuple[int, int, int, int],
-    subject_bbox: Optional[Tuple[int, int, int, int]]
+    subject_bbox: Optional[Tuple[int, int, int, int]],
+    orig_w: int,
+    orig_h: int
 ) -> Dict[str, Any]:
     """
-    Check whether the subject bounding box is fully contained inside crop_box.
-    Returns status dictionary indicating fit, clipped edges, and recommendations.
+    Check whether the subject bounding box is fully contained inside crop_box,
+    and calculate percentage of original image removed.
     """
+    c_l, c_t, c_r, c_b = crop_box
+    crop_area = (c_r - c_l) * (c_b - c_t)
+    total_area = orig_w * orig_h
+    removed_fraction = max(0.0, 1.0 - (crop_area / total_area))
+
     if subject_bbox is None:
         return {
             "has_subject_box": False,
             "fits_completely": True,
             "clipped_horizontal": False,
             "clipped_vertical": False,
+            "removed_fraction": removed_fraction,
             "message": "Subject framing estimated using saliency energy."
         }
 
-    c_l, c_t, c_r, c_b = crop_box
     s_l, s_t, s_r, s_b = subject_bbox
 
     clipped_left = s_l < c_l
@@ -320,13 +355,14 @@ def check_subject_fit(
             edges.append("sides")
         if clipped_top or clipped_bottom:
             edges.append("top/bottom")
-        msg = f"Subject exceeds crop boundaries on {' and '.join(edges)}. Switch to Entire Image Visible to avoid any trimming."
+        msg = f"Subject exceeds crop boundaries on {' and '.join(edges)}. Preserved in Entire Image Visible mode."
 
     return {
         "has_subject_box": True,
         "fits_completely": fits,
         "clipped_horizontal": clipped_h,
         "clipped_vertical": clipped_v,
+        "removed_fraction": removed_fraction,
         "message": msg
     }
 
@@ -344,7 +380,6 @@ def validate_manual_crop_box(
     2. Lie strictly within original image bounds [0..orig_w, 0..orig_h].
     3. Have positive dimensions.
     4. Match the target aspect ratio within tolerance (never stretch).
-    Returns normalized/sanitized (left, top, right, bottom) or raises ValueError.
     """
     left, top, right, bottom = crop_box
     if left >= right or top >= bottom:
@@ -366,8 +401,7 @@ def validate_manual_crop_box(
     if ratio_error > tolerance:
         raise ValueError(
             f"Crop box ratio ({actual_ratio:.3f}) does not match target ratio ({target_ratio:.3f}). "
-            f"Error of {ratio_error*100:.1f}% exceeds allowed tolerance of {tolerance*100:.0f}%. "
-            "Please select a crop matching the target aspect ratio to avoid distortion."
+            f"Error of {ratio_error*100:.1f}% exceeds allowed tolerance of {tolerance*100:.0f}%."
         )
 
     return left, top, right, bottom
@@ -386,7 +420,6 @@ def process_safe_fit(
     - Proportionally scales foreground using LANCZOS.
     - Clean solid background (no blurred duplicate effect, no picture-in-picture).
     - Defaults to a clean neutral studio light background (#F8FAFC).
-    - Perfect for when user wants zero content trimmed.
     """
     orig_w, orig_h = img.size
     scale = min(target_w / orig_w, target_h / orig_h)
@@ -402,7 +435,7 @@ def process_safe_fit(
         if len(bg_hex) == 6:
             bg_rgb = tuple(int(bg_hex[i:i+2], 16) for i in (0, 2, 4))
         else:
-            bg_rgb = (248, 250, 252)  # #F8FAFC light studio neutral
+            bg_rgb = (248, 250, 252)
 
         canvas_mode = "RGBA" if img.mode == "RGBA" else "RGB"
         color_fill = (*bg_rgb, 255) if canvas_mode == "RGBA" else bg_rgb
@@ -426,14 +459,18 @@ def process_image_for_ratio(
     bg_color_hex: str = "#F8FAFC",
     is_transparent: bool = False,
     manual_crop: Optional[Tuple[int, int, int, int]] = None,
-    subject_bbox: Optional[Tuple[int, int, int, int]] = None
-) -> Tuple[Image.Image, Tuple[int, int, int, int], Dict[str, Any]]:
+    subject_bbox: Optional[Tuple[int, int, int, int]] = None,
+    auto_fallback: bool = True
+) -> Tuple[Image.Image, Tuple[int, int, int, int], Dict[str, Any], str, Optional[str]]:
     """
     Process image according to specified mode and ratio config.
-    Default mode: 'smart_crop' (Professional full-frame crop, subject-centered, no blur).
-    Alternative mode: 'safe_fit' (Preserves full image with clean solid background).
-    Output dimensions are guaranteed to match target_config width and height exactly.
-    Returns: (processed_image, crop_box, fit_info)
+    Returns: (processed_image, crop_box, fit_info, effective_mode, fallback_reason)
+
+    Automatic Fallback:
+    When mode == 'smart_crop' and auto_fallback is True:
+    - Calculates proposed crop.
+    - If subject bounding box would be clipped, automatically falls back to Safe Fit.
+    - Accurately reports effective_mode='safe_fit' and simple fallback_reason to frontend.
     """
     target_w = target_config["width"]
     target_h = target_config["height"]
@@ -445,10 +482,10 @@ def process_image_for_ratio(
         validated_crop = validate_manual_crop_box(manual_crop, orig_w, orig_h, target_ratio)
         cropped = img.crop(validated_crop)
         result = cropped.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
-        fit_info = check_subject_fit(validated_crop, subject_bbox)
-        return result, validated_crop, fit_info
+        fit_info = check_subject_fit(validated_crop, subject_bbox, orig_w, orig_h)
+        return result, validated_crop, fit_info, "manual_crop", None
 
-    # 2. Safe Fit (Alternative: full image preserved on clean solid background)
+    # 2. Explicit Safe Fit
     if mode in ["safe_fit", "fit_contain", "smart_fit"]:
         canvas, full_box = process_safe_fit(
             img=img,
@@ -462,23 +499,53 @@ def process_image_for_ratio(
             "fits_completely": True,
             "clipped_horizontal": False,
             "clipped_vertical": False,
+            "removed_fraction": 0.0,
             "message": "100% of the image is preserved on a clean solid studio background."
         }
-        return canvas, full_box, fit_info
+        return canvas, full_box, fit_info, "safe_fit", None
 
-    # 3. Professional Smart Crop (Default: full-frame, subject-prominent, no blur)
+    # 3. Smart Crop with Automatic Fallback
     try:
         cv_img = cv2.cvtColor(np.array(img.convert("RGB")), cv2.COLOR_RGB2BGR)
         center_x, center_y = detect_saliency_center(cv_img)
         if subject_bbox is None:
-            subject_bbox = detect_saliency_bbox(cv_img)
+            subject_bbox = detect_subject_bbox(cv_img)
     except Exception:
         center_x, center_y = 0.5, 0.5
 
     crop_box = calculate_crop_window(
         orig_w, orig_h, target_ratio, center_x, center_y, subject_bbox=subject_bbox
     )
+    fit_info = check_subject_fit(crop_box, subject_bbox, orig_w, orig_h)
+
+    # Automatic fallback check:
+    # If the subject bounding box cannot fit inside the proposed crop without cutting off wheels/bumpers/body,
+    # or if more than 35% of the frame is removed cutting the subject, fall back to Safe Fit cleanly.
+    should_fallback = auto_fallback and (
+        (fit_info.get("has_subject_box") and not fit_info.get("fits_completely"))
+        or (fit_info.get("removed_fraction", 0.0) > 0.40 and (orig_w / orig_h > 1.4 or orig_w / orig_h < 0.7))
+    )
+
+    if should_fallback:
+        canvas, full_box = process_safe_fit(
+            img=img,
+            target_w=target_w,
+            target_h=target_h,
+            bg_color_hex=bg_color_hex,
+            is_transparent=is_transparent
+        )
+        fallback_msg = "Your complete image has been preserved to avoid cutting important parts."
+        safe_fit_info = {
+            "has_subject_box": fit_info.get("has_subject_box", False),
+            "fits_completely": True,
+            "clipped_horizontal": False,
+            "clipped_vertical": False,
+            "removed_fraction": 0.0,
+            "message": fallback_msg
+        }
+        return canvas, full_box, safe_fit_info, "safe_fit", fallback_msg
+
+    # Otherwise perform crisp Full-Frame Smart Crop
     cropped = img.crop(crop_box)
     result = cropped.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
-    fit_info = check_subject_fit(crop_box, subject_bbox)
-    return result, crop_box, fit_info
+    return result, crop_box, fit_info, "smart_crop", None

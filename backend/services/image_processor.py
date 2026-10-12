@@ -218,7 +218,7 @@ def generate_all_ratios(
             legacy_key = config["legacy_key"]
             manual_crop = custom_crops.get(ratio_key) or custom_crops.get(safe_key) or custom_crops.get(legacy_key)
 
-            processed, crop_box, fit_info = process_image_for_ratio(
+            processed, crop_box, fit_info, effective_mode, fallback_reason = process_image_for_ratio(
                 img=source_img,
                 target_config=config,
                 mode=mode,
@@ -306,9 +306,10 @@ def generate_all_ratios(
                 "source_height": orig_h,
                 "source_image_path": orig_path,
                 "crop_box": list(crop_box),
-                "mode": mode,
-                "edges_trimmed": edges_trimmed and mode == "smart_crop",
+                "mode": effective_mode,
+                "edges_trimmed": edges_trimmed and effective_mode == "smart_crop",
                 "fit_info": fit_info,
+                "fallback_reason": fallback_reason,
             })
 
     session_data = {
@@ -396,7 +397,7 @@ def regenerate_single_ratio(
         source_img = ensure_srgb_profile(source_img)
         orig_w, orig_h = source_img.size
 
-        processed, crop_box, fit_info = process_image_for_ratio(
+        processed, crop_box, fit_info, effective_mode, fallback_reason = process_image_for_ratio(
             img=source_img,
             target_config=target_config,
             mode=proc_mode,
@@ -482,9 +483,10 @@ def regenerate_single_ratio(
             "source_height": orig_h,
             "source_image_path": img_path,
             "crop_box": list(crop_box),
-            "mode": proc_mode,
-            "edges_trimmed": edges_trimmed and proc_mode == "smart_crop",
+            "mode": effective_mode,
+            "edges_trimmed": edges_trimmed and effective_mode == "smart_crop",
             "fit_info": fit_info,
+            "fallback_reason": fallback_reason,
         }
 
     # Update manifest atomically

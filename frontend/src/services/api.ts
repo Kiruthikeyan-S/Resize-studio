@@ -40,6 +40,7 @@ export interface RatioOutput {
   mode: string;
   edges_trimmed?: boolean;
   fit_info?: FitInfo;
+  fallback_reason?: string;
 }
 
 export interface ConvertSettings {
