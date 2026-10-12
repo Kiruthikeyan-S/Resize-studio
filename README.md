@@ -151,7 +151,7 @@ Open `http://localhost:5173` in your browser.
 
 ## 🧪 Automated Testing
 
-### Backend Tests (20 Automated Tests)
+### Backend Tests (21 Automated Tests)
 Run the full regression test suite:
 ```powershell
 cd backend

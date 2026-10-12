@@ -143,25 +143,38 @@ def detect_subject_bbox(img_cv: np.ndarray) -> Optional[Tuple[int, int, int, int
         h, w = img_cv.shape[:2]
         gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY) if len(img_cv.shape) == 3 else img_cv.copy()
 
-        # 1. Saliency energy map
-        saliency_map = compute_spectral_residual_saliency(img_cv)
+        # Suppress perimeter ringing artifact (outer 2% border)
+        m = max(2, int(min(w, h) * 0.02))
 
-        # 2. Edge energy
+        # 1. Saliency energy map with border suppression
+        saliency_map = compute_spectral_residual_saliency(img_cv)
+        sal_inner = saliency_map.copy()
+        sal_inner[:m, :] = 0
+        sal_inner[-m:, :] = 0
+        sal_inner[:, :m] = 0
+        sal_inner[:, -m:] = 0
+
+        sal_8u = (sal_inner * 255).astype(np.uint8)
+        _, sal_mask = cv2.threshold(sal_8u, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        # 2. Edge energy with border suppression
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
         edges = cv2.Canny(blurred, 40, 140)
+        edges[:m, :] = 0
+        edges[-m:, :] = 0
+        edges[:, :m] = 0
+        edges[:, -m:] = 0
 
         # Morphological closing on edges to connect subject outlines (e.g. wheels to chassis)
-        k_w = max(5, int(w * 0.04)) | 1
-        k_h = max(5, int(h * 0.04)) | 1
+        k_w = max(3, int(w * 0.02)) | 1
+        k_h = max(3, int(h * 0.02)) | 1
         morph_k = cv2.getStructuringElement(cv2.MORPH_RECT, (k_w, k_h))
         edge_closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, morph_k)
 
         # 3. Combine saliency + edge density
-        sal_thresh = np.percentile(saliency_map, 65)
-        sal_mask = (saliency_map >= sal_thresh).astype(np.uint8) * 255
         combined_mask = cv2.bitwise_or(sal_mask, edge_closed)
 
-        # Morphological open to remove scattered background noise
+        # Morphological open to remove scattered noise
         clean_k = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
         cleaned = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, clean_k)
 
@@ -169,33 +182,36 @@ def detect_subject_bbox(img_cv: np.ndarray) -> Optional[Tuple[int, int, int, int
         if not contours:
             return None
 
-        min_area = (w * h) * 0.015
+        min_area = (w * h) * 0.02
         valid_boxes = []
         for c in contours:
             area = cv2.contourArea(c)
             if area >= min_area:
                 bx, by, bw, bh = cv2.boundingRect(c)
-                valid_boxes.append((bx, by, bx + bw, by + bh))
+                # Ignore full-canvas outer boundaries
+                if bw < w * 0.98 or bh < h * 0.98:
+                    valid_boxes.append((bx, by, bx + bw, by + bh))
 
         if not valid_boxes:
-            c = max(contours, key=cv2.contourArea)
-            bx, by, bw, bh = cv2.boundingRect(c)
-            return (bx, by, bx + bw, by + bh)
+            return None
 
         min_x = min(b[0] for b in valid_boxes)
         min_y = min(b[1] for b in valid_boxes)
         max_x = max(b[2] for b in valid_boxes)
         max_y = max(b[3] for b in valid_boxes)
 
-        # Add small safety padding (3%) while respecting bounds
-        pad_x = int(round(w * 0.03))
-        pad_y = int(round(h * 0.03))
+        # If detected box covers practically the entire image (> 95% both dims), it's full scene
+        if (max_x - min_x) > w * 0.95 and (max_y - min_y) > h * 0.95:
+            return None
+
+        # Add small safety padding (2%)
+        pad_x = int(round(w * 0.02))
+        pad_y = int(round(h * 0.02))
         x1 = max(0, min_x - pad_x)
         y1 = max(0, min_y - pad_y)
         x2 = min(w, max_x + pad_x)
         y2 = min(h, max_y + pad_y)
 
-        # Sanity check: valid subject box must have positive area
         if x2 > x1 and y2 > y1:
             return (x1, y1, x2, y2)
         return None
@@ -337,15 +353,31 @@ def check_subject_fit(
         }
 
     s_l, s_t, s_r, s_b = subject_bbox
+    s_w = max(1, s_r - s_l)
+    s_h = max(1, s_b - s_t)
+    s_area = s_w * s_h
+    subject_coverage = s_area / float(total_area)
 
-    clipped_left = s_l < c_l
-    clipped_right = s_r > c_r
-    clipped_top = s_t < c_t
-    clipped_bottom = s_b > c_b
+    inter_l = max(s_l, c_l)
+    inter_t = max(s_t, c_t)
+    inter_r = min(s_r, c_r)
+    inter_b = min(s_b, c_b)
+
+    if inter_r > inter_l and inter_b > inter_t:
+        inter_area = (inter_r - inter_l) * (inter_b - inter_t)
+    else:
+        inter_area = 0
+
+    subject_clipped_fraction = max(0.0, 1.0 - (inter_area / float(s_area)))
+
+    clipped_left = s_l < c_l - int(round(orig_w * 0.02))
+    clipped_right = s_r > c_r + int(round(orig_w * 0.02))
+    clipped_top = s_t < c_t - int(round(orig_h * 0.02))
+    clipped_bottom = s_b > c_b + int(round(orig_h * 0.02))
 
     clipped_h = clipped_left or clipped_right
     clipped_v = clipped_top or clipped_bottom
-    fits = not (clipped_h or clipped_v)
+    fits = not (clipped_h or clipped_v) and subject_clipped_fraction < 0.05
 
     if fits:
         msg = "Subject is fully framed inside the crop."
@@ -355,13 +387,15 @@ def check_subject_fit(
             edges.append("sides")
         if clipped_top or clipped_bottom:
             edges.append("top/bottom")
-        msg = f"Subject exceeds crop boundaries on {' and '.join(edges)}. Preserved in Entire Image Visible mode."
+        msg = f"Subject trimmed on {' and '.join(edges) if edges else 'edges'}."
 
     return {
         "has_subject_box": True,
         "fits_completely": fits,
         "clipped_horizontal": clipped_h,
         "clipped_vertical": clipped_v,
+        "subject_clipped_fraction": subject_clipped_fraction,
+        "subject_coverage": subject_coverage,
         "removed_fraction": removed_fraction,
         "message": msg
     }
@@ -519,12 +553,17 @@ def process_image_for_ratio(
     fit_info = check_subject_fit(crop_box, subject_bbox, orig_w, orig_h)
 
     # Automatic fallback check:
-    # If the subject bounding box cannot fit inside the proposed crop without cutting off wheels/bumpers/body,
-    # or if more than 35% of the frame is removed cutting the subject, fall back to Safe Fit cleanly.
-    should_fallback = auto_fallback and (
-        (fit_info.get("has_subject_box") and not fit_info.get("fits_completely"))
-        or (fit_info.get("removed_fraction", 0.0) > 0.40 and (orig_w / orig_h > 1.4 or orig_w / orig_h < 0.7))
-    )
+    # Option A (Full-Frame Photo) MUST crop and fill the canvas to create distinctive framed outputs!
+    # Fallback to Safe Fit should ONLY occur in extreme scenarios:
+    # e.g., a wide vehicle / elongated subject (aspect ratio >= 1.5) forced into an extreme narrow portrait frame (target_ratio <= 0.85)
+    # where an isolated subject would have over 40% of its body/wheels severed.
+    # It must NEVER trigger on standard scenes, food, products, or normal photos where the user expects the photo to fill the canvas!
+    orig_ratio = orig_w / float(orig_h)
+    extreme_aspect_mismatch = (orig_ratio >= 1.5 and target_ratio <= 0.85) or (orig_ratio <= 0.67 and target_ratio >= 1.5)
+    is_isolated_subject = fit_info.get("subject_coverage", 1.0) < 0.75
+    severe_clipping = fit_info.get("subject_clipped_fraction", 0.0) >= 0.40
+
+    should_fallback = auto_fallback and extreme_aspect_mismatch and is_isolated_subject and severe_clipping
 
     if should_fallback:
         canvas, full_box = process_safe_fit(

@@ -340,3 +340,37 @@ def test_wide_vehicle_automatic_safe_fit_fallback():
     assert portrait_3x4["fallback_reason"] is not None
 
 
+def test_food_platter_distinct_full_frame_crops_all_ratios():
+    """Verify standard scene/food photography generates 5 distinct full-frame crops without false Safe Fit fallback."""
+    # Create a realistic food platter / product photo (1200x800)
+    img = Image.new("RGB", (1200, 800), (245, 245, 245))
+    from PIL import ImageDraw
+    draw = ImageDraw.Draw(img)
+    draw.ellipse([200, 100, 1000, 700], fill=(200, 100, 50))
+
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=95)
+    img_bytes = buf.getvalue()
+
+    upload_res = client.post("/api/upload", files={"file": ("food_platter.jpg", img_bytes, "image/jpeg")})
+    assert upload_res.status_code == 200
+    image_id = upload_res.json()["image_id"]
+
+    convert_res = client.post("/api/convert", json={"image_id": image_id, "mode": "smart_crop"})
+    assert convert_res.status_code == 200
+    data = convert_res.json()
+
+    assert len(data["outputs"]) == 5
+    crop_boxes = set()
+
+    for item in data["outputs"]:
+        # In Full-Frame Photo mode, standard photography must fill the frame (smart_crop) without false fallback
+        assert item["mode"] == "smart_crop", f"{item['name']} unexpectedly fell back to safe_fit"
+        assert item["fallback_reason"] is None
+        crop_boxes.add(tuple(item["crop_box"]))
+
+    # All crop windows should be uniquely calculated for the respective aspect ratio
+    assert len(crop_boxes) == 5, "Crop windows should be uniquely customized for each ratio"
+
+
+
