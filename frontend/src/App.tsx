@@ -317,108 +317,105 @@ export const App: React.FC = () => {
               isBatchConverting={isBatchGenerating}
             />
 
-            {/* Side-by-Side Responsive Layout: Left Panel = Editor + Settings; Right Panel = 5 Ratios */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-              {/* LEFT PANEL: Original Image Editor, Crop Controls, Export Settings */}
-              <div className="lg:col-span-7 space-y-6">
-                {activeImage && (
-                  <OriginalCropEditor
-                    originalData={activeImage}
-                    onApply={handleUpdateOriginalSuccess}
-                    onChangeImage={handleReset}
-                    inline={true}
-                  />
-                )}
-
-                {/* Compact Export Settings */}
-                <ConversionSettings
-                  settings={settings}
-                  setSettings={setSettings}
+            {/* Upper Section: Original Image Framing Editor & Compact Export Settings */}
+            <div className="space-y-6 max-w-4xl mx-auto">
+              {activeImage && (
+                <OriginalCropEditor
+                  originalData={activeImage}
+                  onApply={handleUpdateOriginalSuccess}
+                  onChangeImage={handleReset}
+                  inline={true}
                 />
-              </div>
+              )}
 
-              {/* RIGHT PANEL: Five Ratio Outputs */}
-              <div className="lg:col-span-5 space-y-5">
-                <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-xs">
-                  <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
-                    <div>
-                      <h3 className="font-semibold text-slate-900 text-sm">
-                        Generated Ratio Outputs
-                      </h3>
-                      <p className="text-xs text-slate-500">
-                        {currentOutputs.length > 0
-                          ? '5 standard commercial aspect ratios'
-                          : 'Framing will apply to 5 ratios automatically'}
-                      </p>
-                    </div>
-                    {currentOutputs.length > 0 && (
-                      <span className="text-xs font-mono font-medium text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200">
-                        5 Ready
-                      </span>
-                    )}
+              {/* Compact Export Settings */}
+              <ConversionSettings
+                settings={settings}
+                setSettings={setSettings}
+              />
+            </div>
+
+            {/* Lower Section: Horizontal Full-Width Generated 5 Ratio Outputs */}
+            <div className="space-y-6 pt-4">
+              <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-6 shadow-xs">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-100 gap-2 mb-6">
+                  <div>
+                    <h3 className="font-semibold text-slate-900 text-base">
+                      Generated Ratio Outputs
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      {currentOutputs.length > 0
+                        ? 'All 5 standard commercial aspect ratios displayed side-by-side'
+                        : 'Your framing will generate 5 ratios automatically across the width'}
+                    </p>
                   </div>
-
-                  {/* Empty state before Apply & Update or when generating */}
-                  {isGenerating ? (
-                    <div className="py-16 text-center space-y-3 bg-slate-50/50 rounded-xl border border-dashed border-slate-200">
-                      <div className="w-10 h-10 mx-auto rounded-full bg-violet-100 flex items-center justify-center text-violet-600 animate-spin">
-                        <div className="w-5 h-5 border-2 border-violet-600 border-t-transparent rounded-full" />
-                      </div>
-                      <p className="text-sm font-semibold text-slate-800">
-                        Generating 5 Ratios...
-                      </p>
-                      <p className="text-xs text-slate-500 max-w-xs mx-auto">
-                        Applying your framing adjustments across Square, Portrait (4:5, 3:4), and Landscape (16:9, 5:4).
-                      </p>
-                    </div>
-                  ) : currentOutputs.length === 0 ? (
-                    <div className="py-16 text-center space-y-3 bg-slate-50/50 rounded-xl border border-dashed border-slate-200">
-                      <div className="w-12 h-12 mx-auto rounded-2xl bg-violet-50 text-violet-500 flex items-center justify-center border border-violet-100">
-                        <div className="w-6 h-6 border-2 border-dashed border-violet-400 rounded-lg" />
-                      </div>
-                      <div>
-                        <h4 className="text-sm font-semibold text-slate-800">
-                          Your five images will appear here
-                        </h4>
-                        <p className="text-xs text-slate-500 max-w-xs mx-auto mt-1">
-                          Adjust composition or position on the left and click <span className="font-semibold text-violet-700">Apply & Update</span> to generate all 5 sizes.
-                        </p>
-                      </div>
-                    </div>
-                  ) : (
-                    /* Vertically Stacked 5 Ratio Preview Cards in Exact Single Column Order */
-                    <div className="space-y-4">
-                      {/* 1. Download ZIP Archive card at top */}
-                      {activeImage && (
-                        <DownloadAll
-                          imageId={activeImage.image_id}
-                          totalOutputs={currentOutputs.length}
-                          allImageIds={images
-                            .filter((img) => (outputsByModeMap[img.image_id]?.[settings.mode]?.length || 0) > 0)
-                            .map((img) => img.image_id)}
-                          totalConvertedImages={convertedImagesCount}
-                          mode={settings.mode}
-                        />
-                      )}
-
-                      {/* 2-6: The 5 Ratios in Strict Order (Square 1:1, Portrait 4:5, Portrait 3:4, Landscape 16:9, Landscape 5:4) */}
-                      <div className="flex flex-col space-y-4 w-full">
-                        {currentOutputs.map((item) => (
-                          <div key={item.safe_key} className="w-full">
-                            <RatioCard
-                              item={item}
-                              imageId={activeImage.image_id}
-                              onUpdate={handleUpdateSingleRatio}
-                              onOpenCropEditor={(it: RatioOutput) => setEditingItem(it)}
-                              onOpenPreviewModal={(it: RatioOutput) => setPreviewModalItem(it)}
-                              onSwitchToSafeFit={handleSwitchToSafeFit}
-                            />
-                          </div>
-                        ))}
-                      </div>
-                    </div>
+                  {currentOutputs.length > 0 && (
+                    <span className="text-xs font-mono font-medium text-emerald-700 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200 self-start sm:self-auto">
+                      5 Outputs Ready
+                    </span>
                   )}
                 </div>
+
+                {/* Empty state before Apply & Update or when generating */}
+                {isGenerating ? (
+                  <div className="py-20 text-center space-y-3 bg-slate-50/50 rounded-xl border border-dashed border-slate-200">
+                    <div className="w-12 h-12 mx-auto rounded-full bg-violet-100 flex items-center justify-center text-violet-600 animate-spin">
+                      <div className="w-6 h-6 border-2 border-violet-600 border-t-transparent rounded-full" />
+                    </div>
+                    <p className="text-base font-semibold text-slate-800">
+                      Generating 5 Ratios...
+                    </p>
+                    <p className="text-xs text-slate-500 max-w-md mx-auto">
+                      Applying your framing adjustments across Square, Portrait (4:5, 3:4), and Landscape (16:9, 5:4).
+                    </p>
+                  </div>
+                ) : currentOutputs.length === 0 ? (
+                  <div className="py-20 text-center space-y-3 bg-slate-50/50 rounded-xl border border-dashed border-slate-200">
+                    <div className="w-14 h-14 mx-auto rounded-2xl bg-violet-50 text-violet-500 flex items-center justify-center border border-violet-100">
+                      <div className="w-7 h-7 border-2 border-dashed border-violet-400 rounded-lg" />
+                    </div>
+                    <div>
+                      <h4 className="text-base font-semibold text-slate-800">
+                        Your five images will appear here
+                      </h4>
+                      <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
+                        Adjust composition or position above and click <span className="font-semibold text-violet-700">Apply & Update</span> to generate all 5 sizes side-by-side.
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  /* Horizontal Layout: ZIP card on top, then all 5 ratio cards side-by-side */
+                  <div className="space-y-6">
+                    {/* Download ZIP Archive card at top */}
+                    {activeImage && (
+                      <DownloadAll
+                        imageId={activeImage.image_id}
+                        totalOutputs={currentOutputs.length}
+                        allImageIds={images
+                          .filter((img) => (outputsByModeMap[img.image_id]?.[settings.mode]?.length || 0) > 0)
+                          .map((img) => img.image_id)}
+                        totalConvertedImages={convertedImagesCount}
+                        mode={settings.mode}
+                      />
+                    )}
+
+                    {/* All 5 Ratios in Horizontal Row Grid (5 columns on large screens) */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+                      {currentOutputs.map((item) => (
+                        <div key={item.safe_key} className="w-full">
+                          <RatioCard
+                            item={item}
+                            imageId={activeImage.image_id}
+                            onUpdate={handleUpdateSingleRatio}
+                            onOpenCropEditor={(it: RatioOutput) => setEditingItem(it)}
+                            onOpenPreviewModal={(it: RatioOutput) => setPreviewModalItem(it)}
+                            onSwitchToSafeFit={handleSwitchToSafeFit}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
