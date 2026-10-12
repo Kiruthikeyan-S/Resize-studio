@@ -39,10 +39,17 @@ export const App: React.FC = () => {
   });
 
   const activeImage = images.find((img) => img.image_id === activeImageId) || images[0] || null;
-  // Strictly display outputs for active image and current selected mode
-  const currentOutputs = activeImage
+  // Strictly display outputs for active image and current selected mode, sorted in specified vertical order:
+  // 1. Square (1:1), 2. Portrait (4:5), 3. Portrait (3:4), 4. Landscape (16:9), 5. Landscape (5:4)
+  const ratioOrder = ['square_1x1', 'portrait_4x5', 'portrait_3x4', 'landscape_16x9', 'landscape_5x4'];
+  const rawOutputs = activeImage
     ? (outputsByModeMap[activeImage.image_id]?.[settings.mode] || [])
     : [];
+  const currentOutputs = [...rawOutputs].sort((a, b) => {
+    const idxA = ratioOrder.indexOf(a.safe_key);
+    const idxB = ratioOrder.indexOf(b.safe_key);
+    return (idxA !== -1 ? idxA : 99) - (idxB !== -1 ? idxB : 99);
+  });
 
   const handleUploadSuccess = (uploadedList: UploadResponse[]) => {
     setImages((prev) => {
@@ -242,16 +249,6 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleRevertToRaw = async () => {
-    if (!activeImage) return;
-    try {
-      const reset = await api.resetOriginalFraming(activeImage.image_id);
-      await handleUpdateOriginalSuccess(reset);
-    } catch (err: any) {
-      setErrorMessage(err.response?.data?.detail || err.message || 'Failed to revert original image.');
-    }
-  };
-
   // Convert outputsByModeMap to a flat imageOutputsMap for ImageQueueBar progress indicators
   const queueOutputsMap: Record<string, RatioOutput[]> = {};
   for (const img of images) {
@@ -328,7 +325,6 @@ export const App: React.FC = () => {
                   <OriginalCropEditor
                     originalData={activeImage}
                     onApply={handleUpdateOriginalSuccess}
-                    onResetOriginal={handleRevertToRaw}
                     onChangeImage={handleReset}
                     inline={true}
                   />
@@ -390,8 +386,9 @@ export const App: React.FC = () => {
                       </div>
                     </div>
                   ) : (
-                    /* Vertically Stacked 5 Ratio Preview Cards */
+                    /* Vertically Stacked 5 Ratio Preview Cards in Exact Single Column Order */
                     <div className="space-y-4">
+                      {/* 1. Download ZIP Archive card at top */}
                       {activeImage && (
                         <DownloadAll
                           imageId={activeImage.image_id}
@@ -404,33 +401,21 @@ export const App: React.FC = () => {
                         />
                       )}
 
-                      <div className="space-y-4">
+                      {/* 2-6: The 5 Ratios in Strict Order (Square 1:1, Portrait 4:5, Portrait 3:4, Landscape 16:9, Landscape 5:4) */}
+                      <div className="flex flex-col space-y-4 w-full">
                         {currentOutputs.map((item) => (
-                          <RatioCard
-                            key={item.safe_key}
-                            item={item}
-                            imageId={activeImage.image_id}
-                            onUpdate={handleUpdateSingleRatio}
-                            onOpenCropEditor={(it: RatioOutput) => setEditingItem(it)}
-                            onOpenPreviewModal={(it: RatioOutput) => setPreviewModalItem(it)}
-                            onSwitchToSafeFit={handleSwitchToSafeFit}
-                          />
+                          <div key={item.safe_key} className="w-full">
+                            <RatioCard
+                              item={item}
+                              imageId={activeImage.image_id}
+                              onUpdate={handleUpdateSingleRatio}
+                              onOpenCropEditor={(it: RatioOutput) => setEditingItem(it)}
+                              onOpenPreviewModal={(it: RatioOutput) => setPreviewModalItem(it)}
+                              onSwitchToSafeFit={handleSwitchToSafeFit}
+                            />
+                          </div>
                         ))}
                       </div>
-
-                      {activeImage && currentOutputs.length > 0 && (
-                        <div className="pt-2">
-                          <DownloadAll
-                            imageId={activeImage.image_id}
-                            totalOutputs={currentOutputs.length}
-                            allImageIds={images
-                              .filter((img) => (outputsByModeMap[img.image_id]?.[settings.mode]?.length || 0) > 0)
-                              .map((img) => img.image_id)}
-                            totalConvertedImages={convertedImagesCount}
-                            mode={settings.mode}
-                          />
-                        </div>
-                      )}
                     </div>
                   )}
                 </div>

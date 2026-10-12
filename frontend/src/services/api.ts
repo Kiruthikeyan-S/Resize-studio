@@ -5,6 +5,8 @@ export interface UploadResponse {
   original_filename: string;
   width: number;
   height: number;
+  raw_width?: number;
+  raw_height?: number;
   file_size: number;
   format: string;
   mode: string;

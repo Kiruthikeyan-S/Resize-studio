@@ -104,6 +104,8 @@ def save_original_image(
         "original_filename": original_filename,
         "width": width,
         "height": height,
+        "raw_width": width,
+        "raw_height": height,
         "file_size": len(file_bytes),
         "format": format_name,
         "mode": mode,
@@ -112,6 +114,8 @@ def save_original_image(
         "version": 1,
         "created_at": time.time(),
         "is_low_res": width < 1600 or height < 1200,
+        "is_cropped_master": False,
+        "master_crop_box": None,
     }
 
     meta_path = os.path.join(orig_session_dir, "meta.json")
@@ -206,6 +210,15 @@ def update_working_image(
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
+    # Invalidate and clear previous generated ratio outputs so they are recreated fresh
+    _, gen_session_dir = get_image_session_dirs(image_id)
+    if os.path.exists(gen_session_dir):
+        for fname in os.listdir(gen_session_dir):
+            try:
+                os.remove(os.path.join(gen_session_dir, fname))
+            except Exception:
+                pass
+
     return meta
 
 
@@ -231,6 +244,8 @@ def reset_working_image(image_id: str) -> Dict[str, Any]:
         meta.update({
             "width": width,
             "height": height,
+            "raw_width": width,
+            "raw_height": height,
             "version": version,
             "is_cropped_master": False,
             "master_crop_box": None,
@@ -239,6 +254,15 @@ def reset_working_image(image_id: str) -> Dict[str, Any]:
     meta_path = os.path.join(orig_session_dir, "meta.json")
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
+
+    # Clean generated outputs directory for this image so no stale outputs remain
+    _, gen_session_dir = get_image_session_dirs(image_id)
+    if os.path.exists(gen_session_dir):
+        for fname in os.listdir(gen_session_dir):
+            try:
+                os.remove(os.path.join(gen_session_dir, fname))
+            except Exception:
+                pass
 
     return meta
 

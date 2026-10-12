@@ -7,7 +7,6 @@ interface OriginalCropEditorProps {
   originalData: UploadResponse;
   onClose?: () => void;
   onApply: (updated: UploadResponse) => void | Promise<void>;
-  onResetOriginal?: () => void;
   onChangeImage?: () => void;
   inline?: boolean;
 }
@@ -16,7 +15,6 @@ export const OriginalCropEditor: React.FC<OriginalCropEditorProps> = ({
   originalData,
   onClose,
   onApply,
-  onResetOriginal,
   onChangeImage,
   inline = false,
 }) => {
@@ -34,8 +32,9 @@ export const OriginalCropEditor: React.FC<OriginalCropEditorProps> = ({
 
   // Use untouched raw source URL if available, else original_url
   const sourceUrl = originalData.raw_url || originalData.original_url;
-  const origW = originalData.width;
-  const origH = originalData.height;
+  // Always frame against raw uncropped dimensions when present
+  const origW = originalData.raw_width || originalData.width;
+  const origH = originalData.raw_height || originalData.height;
 
   useEffect(() => {
     // If original already has master_crop_box, initialize position
@@ -54,7 +53,7 @@ export const OriginalCropEditor: React.FC<OriginalCropEditorProps> = ({
       setPosY(50);
       setZoom(1.0);
     }
-  }, [originalData, origW, origH]);
+  }, [originalData.image_id, originalData.master_crop_box, origW, origH]);
 
   // The crop frame maintains the original image aspect ratio, zooming into the subject
   const effectiveCropW = Math.max(20, Math.round(origW / zoom));
@@ -147,7 +146,6 @@ export const OriginalCropEditor: React.FC<OriginalCropEditorProps> = ({
       setPosY(50);
       setZoom(1.0);
       await onApply(reset);
-      if (onResetOriginal) onResetOriginal();
     } catch (err: any) {
       setErrorMessage(
         err.response?.data?.detail || err.message || 'Failed to reset image.'

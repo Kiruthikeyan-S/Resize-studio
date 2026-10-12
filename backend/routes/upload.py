@@ -37,6 +37,8 @@ class UploadResponse(BaseModel):
     original_filename: str
     width: int
     height: int
+    raw_width: Optional[int] = None
+    raw_height: Optional[int] = None
     file_size: int
     format: str
     mode: str
@@ -109,6 +111,8 @@ async def _process_single_upload(file: UploadFile) -> UploadResponse:
         original_filename=meta["original_filename"],
         width=meta["width"],
         height=meta["height"],
+        raw_width=meta.get("raw_width", meta["width"]),
+        raw_height=meta.get("raw_height", meta["height"]),
         file_size=meta["file_size"],
         format=meta["format"],
         mode=meta["mode"],
@@ -204,6 +208,8 @@ async def update_original_framing(payload: UpdateOriginalRequest):
         original_filename=updated_meta["original_filename"],
         width=updated_meta["width"],
         height=updated_meta["height"],
+        raw_width=updated_meta.get("raw_width", updated_meta["width"]),
+        raw_height=updated_meta.get("raw_height", updated_meta["height"]),
         file_size=updated_meta["file_size"],
         format=updated_meta["format"],
         mode=updated_meta["mode"],
@@ -234,6 +240,8 @@ async def reset_original_framing(image_id: str):
         original_filename=reset_meta["original_filename"],
         width=reset_meta["width"],
         height=reset_meta["height"],
+        raw_width=reset_meta.get("raw_width", reset_meta["width"]),
+        raw_height=reset_meta.get("raw_height", reset_meta["height"]),
         file_size=reset_meta["file_size"],
         format=reset_meta["format"],
         mode=reset_meta["mode"],
