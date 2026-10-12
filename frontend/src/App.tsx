@@ -2,9 +2,8 @@ import React, { useState } from 'react';
 import { Header } from './components/Header';
 import { ImageUploader } from './components/ImageUploader';
 import { ImageQueueBar } from './components/ImageQueueBar';
-import { OriginalPreview } from './components/OriginalPreview';
 import { ConversionSettings } from './components/ConversionSettings';
-import { PreviewGrid } from './components/PreviewGrid';
+import { RatioCard } from './components/RatioCard';
 import { DownloadAll } from './components/DownloadAll';
 import { CropEditor } from './components/CropEditor';
 import { OriginalCropEditor } from './components/OriginalCropEditor';
@@ -57,8 +56,8 @@ export const App: React.FC = () => {
         ...prev,
         image_id: uploadedList[0].image_id,
       }));
-      // Auto-open crop editor for the original image so user adjusts framing first
-      setIsEditingOriginal(true);
+      // Inline left panel editor is already displayed directly
+      setIsEditingOriginal(false);
     }
     setErrorMessage(null);
   };
@@ -209,27 +208,45 @@ export const App: React.FC = () => {
     });
   };
 
-  const handleUpdateOriginalSuccess = (updatedData: UploadResponse) => {
+  const handleUpdateOriginalSuccess = async (updatedData: UploadResponse) => {
     // 1. Update the image entry in images list with new dimensions, version, and master crop status
     setImages((prev) =>
       prev.map((img) => (img.image_id === updatedData.image_id ? updatedData : img))
     );
 
-    // 2. Clear out any previous ratio outputs for this image so they must be generated from the newly adjusted framing
-    setOutputsByModeMap((prev) => {
-      const copy = { ...prev };
-      delete copy[updatedData.image_id];
-      return copy;
-    });
-
+    // 2. Automatically generate the 5 aspect ratios right away from this finalized master image
+    setIsGenerating(true);
     setErrorMessage(null);
+
+    const activeSettings: ConvertSettings = {
+      ...settings,
+      image_id: updatedData.image_id,
+      mode: 'smart_crop',
+    };
+
+    try {
+      const response = await api.convertImage(activeSettings);
+      setOutputsByModeMap((prev) => ({
+        ...prev,
+        [updatedData.image_id]: {
+          ...(prev[updatedData.image_id] || {}),
+          [settings.mode]: response.outputs,
+        },
+      }));
+    } catch (err: any) {
+      setErrorMessage(
+        err.response?.data?.detail || err.message || 'Failed to auto-generate 5 ratios after applying framing.'
+      );
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   const handleRevertToRaw = async () => {
     if (!activeImage) return;
     try {
       const reset = await api.resetOriginalFraming(activeImage.image_id);
-      handleUpdateOriginalSuccess(reset);
+      await handleUpdateOriginalSuccess(reset);
     } catch (err: any) {
       setErrorMessage(err.response?.data?.detail || err.message || 'Failed to revert original image.');
     }
@@ -256,10 +273,10 @@ export const App: React.FC = () => {
         {/* Intro Hero */}
         <div className="text-center max-w-2xl mx-auto space-y-2">
           <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-slate-900">
-            Professional Image Ratio Converter
+            Professional Image Ratio Studio
           </h1>
           <p className="text-sm text-slate-500 max-w-xl mx-auto">
-            Batch-convert single or multiple images into 5 standard high-resolution aspect ratios with precision framing.
+            Upload your original image, fine-tune composition & framing, and instantly generate all 5 standard commercial aspect ratios.
           </p>
         </div>
 
@@ -303,50 +320,122 @@ export const App: React.FC = () => {
               isBatchConverting={isBatchGenerating}
             />
 
-            {/* Active Image Source Preview */}
-            {activeImage && (
-              <OriginalPreview
-                originalData={activeImage}
-                onReset={handleReset}
-                onOpenEditor={() => setIsEditingOriginal(true)}
-                onRevertToRaw={handleRevertToRaw}
-              />
-            )}
+            {/* Side-by-Side Responsive Layout: Left Panel = Editor + Settings; Right Panel = 5 Ratios */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+              {/* LEFT PANEL: Original Image Editor, Crop Controls, Export Settings */}
+              <div className="lg:col-span-7 space-y-6">
+                {activeImage && (
+                  <OriginalCropEditor
+                    originalData={activeImage}
+                    onApply={handleUpdateOriginalSuccess}
+                    onResetOriginal={handleRevertToRaw}
+                    onChangeImage={handleReset}
+                    inline={true}
+                  />
+                )}
 
-            {/* Conversion Controls */}
-            <ConversionSettings
-              settings={settings}
-              setSettings={setSettings}
-              onGenerate={() => handleGenerate()}
-              isGenerating={isGenerating}
-              totalImagesCount={images.length}
-              onBatchGenerateAll={handleBatchConvertAll}
-              isBatchGenerating={isBatchGenerating}
-            />
-
-            {/* Output Grid and ZIP Download */}
-            {currentOutputs.length > 0 && activeImage && (
-              <div className="space-y-6 pt-4 animate-fade-in">
-                <DownloadAll
-                  imageId={activeImage.image_id}
-                  totalOutputs={currentOutputs.length}
-                  allImageIds={images
-                    .filter((img) => (outputsByModeMap[img.image_id]?.[settings.mode]?.length || 0) > 0)
-                    .map((img) => img.image_id)}
-                  totalConvertedImages={convertedImagesCount}
-                  mode={settings.mode}
-                />
-
-                <PreviewGrid
-                  outputs={currentOutputs}
-                  imageId={activeImage.image_id}
-                  onUpdateRatio={handleUpdateSingleRatio}
-                  onOpenCropEditor={(item) => setEditingItem(item)}
-                  onOpenPreviewModal={(item) => setPreviewModalItem(item)}
-                  onSwitchToSafeFit={handleSwitchToSafeFit}
+                {/* Compact Export Settings */}
+                <ConversionSettings
+                  settings={settings}
+                  setSettings={setSettings}
                 />
               </div>
-            )}
+
+              {/* RIGHT PANEL: Five Ratio Outputs */}
+              <div className="lg:col-span-5 space-y-5">
+                <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-xs">
+                  <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+                    <div>
+                      <h3 className="font-semibold text-slate-900 text-sm">
+                        Generated Ratio Outputs
+                      </h3>
+                      <p className="text-xs text-slate-500">
+                        {currentOutputs.length > 0
+                          ? '5 standard commercial aspect ratios'
+                          : 'Framing will apply to 5 ratios automatically'}
+                      </p>
+                    </div>
+                    {currentOutputs.length > 0 && (
+                      <span className="text-xs font-mono font-medium text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200">
+                        5 Ready
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Empty state before Apply & Update or when generating */}
+                  {isGenerating ? (
+                    <div className="py-16 text-center space-y-3 bg-slate-50/50 rounded-xl border border-dashed border-slate-200">
+                      <div className="w-10 h-10 mx-auto rounded-full bg-violet-100 flex items-center justify-center text-violet-600 animate-spin">
+                        <div className="w-5 h-5 border-2 border-violet-600 border-t-transparent rounded-full" />
+                      </div>
+                      <p className="text-sm font-semibold text-slate-800">
+                        Generating 5 Ratios...
+                      </p>
+                      <p className="text-xs text-slate-500 max-w-xs mx-auto">
+                        Applying your framing adjustments across Square, Portrait (4:5, 3:4), and Landscape (16:9, 5:4).
+                      </p>
+                    </div>
+                  ) : currentOutputs.length === 0 ? (
+                    <div className="py-16 text-center space-y-3 bg-slate-50/50 rounded-xl border border-dashed border-slate-200">
+                      <div className="w-12 h-12 mx-auto rounded-2xl bg-violet-50 text-violet-500 flex items-center justify-center border border-violet-100">
+                        <div className="w-6 h-6 border-2 border-dashed border-violet-400 rounded-lg" />
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-semibold text-slate-800">
+                          Your five images will appear here
+                        </h4>
+                        <p className="text-xs text-slate-500 max-w-xs mx-auto mt-1">
+                          Adjust composition or position on the left and click <span className="font-semibold text-violet-700">Apply & Update</span> to generate all 5 sizes.
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    /* Vertically Stacked 5 Ratio Preview Cards */
+                    <div className="space-y-4">
+                      {activeImage && (
+                        <DownloadAll
+                          imageId={activeImage.image_id}
+                          totalOutputs={currentOutputs.length}
+                          allImageIds={images
+                            .filter((img) => (outputsByModeMap[img.image_id]?.[settings.mode]?.length || 0) > 0)
+                            .map((img) => img.image_id)}
+                          totalConvertedImages={convertedImagesCount}
+                          mode={settings.mode}
+                        />
+                      )}
+
+                      <div className="space-y-4">
+                        {currentOutputs.map((item) => (
+                          <RatioCard
+                            key={item.safe_key}
+                            item={item}
+                            imageId={activeImage.image_id}
+                            onUpdate={handleUpdateSingleRatio}
+                            onOpenCropEditor={(it: RatioOutput) => setEditingItem(it)}
+                            onOpenPreviewModal={(it: RatioOutput) => setPreviewModalItem(it)}
+                            onSwitchToSafeFit={handleSwitchToSafeFit}
+                          />
+                        ))}
+                      </div>
+
+                      {activeImage && currentOutputs.length > 0 && (
+                        <div className="pt-2">
+                          <DownloadAll
+                            imageId={activeImage.image_id}
+                            totalOutputs={currentOutputs.length}
+                            allImageIds={images
+                              .filter((img) => (outputsByModeMap[img.image_id]?.[settings.mode]?.length || 0) > 0)
+                              .map((img) => img.image_id)}
+                            totalConvertedImages={convertedImagesCount}
+                            mode={settings.mode}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
         )}
 

@@ -494,7 +494,7 @@ def process_image_for_ratio(
     is_transparent: bool = False,
     manual_crop: Optional[Tuple[int, int, int, int]] = None,
     subject_bbox: Optional[Tuple[int, int, int, int]] = None,
-    auto_fallback: bool = True
+    auto_fallback: bool = False
 ) -> Tuple[Image.Image, Tuple[int, int, int, int], Dict[str, Any], str, Optional[str]]:
     """
     Process image according to specified mode and ratio config.
@@ -538,7 +538,7 @@ def process_image_for_ratio(
         }
         return canvas, full_box, fit_info, "safe_fit", None
 
-    # 3. Smart Crop (Full-Frame Photo)
+    # 3. Smart Crop with automatic subject-preservation policy
     try:
         cv_img = cv2.cvtColor(np.array(img.convert("RGB")), cv2.COLOR_RGB2BGR)
         center_x, center_y = detect_saliency_center(cv_img)
@@ -552,8 +552,21 @@ def process_image_for_ratio(
     )
     fit_info = check_subject_fit(crop_box, subject_bbox, orig_w, orig_h)
 
-    # Perform crisp Full-Frame Smart Crop filling the target canvas
-    # Note: Never silently convert Option 1 into Option 2.
+    # Automatic Framing Policy:
+    # If the calculated crop would cut important subject boundaries (>5% clipped) and auto_fallback is active,
+    # automatically preserve the complete subject with clean studio padding (no blurred duplicate backgrounds).
+    if auto_fallback and not fit_info["fits_completely"]:
+        canvas, full_box = process_safe_fit(
+            img=img,
+            target_w=target_w,
+            target_h=target_h,
+            bg_color_hex=bg_color_hex,
+            is_transparent=is_transparent
+        )
+        fallback_msg = "Preserved full subject with clean padding to prevent cutting edges."
+        return canvas, full_box, fit_info, "safe_fit", fallback_msg
+
+    # Otherwise, perform crisp Full-Frame crop filling the target canvas
     cropped = img.crop(crop_box)
     result = cropped.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
     return result, crop_box, fit_info, "smart_crop", None
