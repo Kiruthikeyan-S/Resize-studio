@@ -519,7 +519,29 @@ def process_image_for_ratio(
         fit_info = check_subject_fit(validated_crop, subject_bbox, orig_w, orig_h)
         return result, validated_crop, fit_info, "manual_crop", None
 
-    # 2. Explicit Safe Fit
+    # 2. AI Background Expansion Mode
+    if mode in ["ai_expand", "ai_outpaint"]:
+        from services.ai_background_expander import expand_background_product_safe
+        canvas, exp_meta = expand_background_product_safe(
+            img=img,
+            target_w=target_w,
+            target_h=target_h,
+            subject_bbox=subject_bbox,
+            bg_color_hex=bg_color_hex,
+            is_transparent=is_transparent
+        )
+        placed_box = exp_meta.get("placed_box", [0, 0, target_w, target_h])
+        fit_info = {
+            "has_subject_box": True,
+            "fits_completely": True,
+            "clipped_horizontal": False,
+            "clipped_vertical": False,
+            "removed_fraction": 0.0,
+            "message": "Product preserved 100% with seamless background expansion."
+        }
+        return canvas, tuple(placed_box), fit_info, "ai_expand", None
+
+    # 3. Explicit Safe Fit
     if mode in ["safe_fit", "fit_contain", "smart_fit"]:
         canvas, full_box = process_safe_fit(
             img=img,
@@ -538,7 +560,7 @@ def process_image_for_ratio(
         }
         return canvas, full_box, fit_info, "safe_fit", None
 
-    # Detect subject bbox & calculate subject-centered framing window
+    # 3. Smart Crop with automatic subject-preservation policy
     try:
         cv_img = cv2.cvtColor(np.array(img.convert("RGB")), cv2.COLOR_RGB2BGR)
         center_x, center_y = detect_saliency_center(cv_img)
@@ -551,27 +573,6 @@ def process_image_for_ratio(
         orig_w, orig_h, target_ratio, center_x, center_y, subject_bbox=subject_bbox
     )
     fit_info = check_subject_fit(crop_box, subject_bbox, orig_w, orig_h)
-
-    # 3. AI Background Expansion Mode
-    if mode in ["ai_expand", "ai_outpaint"]:
-        # If the subject fits completely inside the target aspect ratio, use full-frame crop
-        if fit_info["fits_completely"]:
-            cropped = img.crop(crop_box)
-            result = cropped.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
-            return result, crop_box, fit_info, "ai_expand", None
-        else:
-            # Subject would be clipped -> seamlessly expand background with zero product alteration
-            from services.ai_background_expander import expand_background_product_safe
-            canvas, exp_meta = expand_background_product_safe(
-                img=img,
-                target_w=target_w,
-                target_h=target_h,
-                subject_bbox=subject_bbox,
-                bg_color_hex=bg_color_hex,
-                is_transparent=is_transparent
-            )
-            placed_box = exp_meta.get("placed_box", [0, 0, target_w, target_h])
-            return canvas, tuple(placed_box), fit_info, "ai_expand", None
 
     # Automatic Framing Policy:
     # If the calculated crop would cut important subject boundaries (>5% clipped) and auto_fallback is active,

@@ -38,11 +38,6 @@ export const RatioCard: React.FC<RatioCardProps> = ({
             {item.width} × {item.height} px
           </span>
         </div>
-        <div className="flex items-center gap-1.5">
-          <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-violet-100 text-violet-700 border border-violet-200 font-mono">
-            {item.ratio_key}
-          </span>
-        </div>
       </div>
 
       {/* Image Preview Area - Large & object-fit: contain */}

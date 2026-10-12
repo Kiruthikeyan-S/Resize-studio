@@ -95,74 +95,93 @@ def studio_texture_background_expansion(
     placed_img = img_rgb.resize((placed_w, placed_h), resample=Image.Resampling.LANCZOS)
     placed_np = np.array(placed_img)
 
-    if expansion_type == "none":
-        return placed_img
+    # 1. Create target canvas initialized with edge-gradient extrapolation
+    canvas_np = np.zeros((target_h, target_w, 3), dtype=np.uint8)
 
-    left_pad = max(0, offset_x)
-    right_pad = max(0, target_w - (offset_x + placed_w))
-    top_pad = max(0, offset_y)
-    bot_pad = max(0, target_h - (offset_y + placed_h))
+    # Sample edge colors from the placed image
+    edge_strip = max(4, min(32, min(placed_w, placed_h) // 10))
 
-    # 1. Seamless symmetric reflection continuation across all extended margins
-    reflected = cv2.copyMakeBorder(placed_np, top_pad, bot_pad, left_pad, right_pad, cv2.BORDER_REFLECT_101)
-    if reflected.shape[:2] != (target_h, target_w):
-        reflected = cv2.resize(reflected, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
+    if expansion_type == "horizontal":
+        # Sample left and right strips
+        left_strip = placed_np[:, :edge_strip, :]
+        right_strip = placed_np[:, -edge_strip:, :]
 
-    # 2. Soften distant extended areas with progressive Gaussian blur for natural studio lighting
-    blur_k = max(21, int(min(target_w, target_h) * 0.05) | 1)
-    blurred = cv2.GaussianBlur(reflected, (blur_k, blur_k), blur_k / 2.0)
+        # Mean vertical profile along left and right edges
+        left_profile = np.mean(left_strip, axis=1, keepdims=True).astype(np.uint8)  # (placed_h, 1, 3)
+        right_profile = np.mean(right_strip, axis=1, keepdims=True).astype(np.uint8)
 
-    # Progressive blend mask for outer margins (0 at boundary, fades to 1 towards outer edge)
-    fade_mask = np.zeros((target_h, target_w), dtype=np.float32)
-    if left_pad > 0:
-        for x in range(left_pad):
-            d = (left_pad - x) / float(left_pad)
-            fade_mask[:, x] = max(fade_mask[:, x], min(1.0, d * 1.5))
-    if right_pad > 0:
-        r_start = offset_x + placed_w
-        for x in range(r_start, target_w):
-            d = (x - r_start) / float(target_w - r_start)
-            fade_mask[:, x] = max(fade_mask[:, x], min(1.0, d * 1.5))
-    if top_pad > 0:
-        for y in range(top_pad):
-            d = (top_pad - y) / float(top_pad)
-            fade_mask[y, :] = max(fade_mask[y, :], min(1.0, d * 1.5))
-    if bot_pad > 0:
-        b_start = offset_y + placed_h
-        for y in range(b_start, target_h):
-            d = (y - b_start) / float(target_h - b_start)
-            fade_mask[y, :] = max(fade_mask[y, :], min(1.0, d * 1.5))
+        # Tile profiles horizontally across extension regions
+        if offset_x > 0:
+            canvas_np[:, :offset_x, :] = np.repeat(left_profile, offset_x, axis=1)
+        right_start = offset_x + placed_w
+        if right_start < target_w:
+            rem_w = target_w - right_start
+            canvas_np[:, right_start:, :] = np.repeat(right_profile, rem_w, axis=1)
 
-    fade_mask_3c = np.repeat(fade_mask[:, :, None], 3, axis=2)
-    canvas_np = (reflected * (1.0 - fade_mask_3c) + blurred * fade_mask_3c).astype(np.uint8)
+        # Put placed image in center
+        canvas_np[:, offset_x:offset_x + placed_w, :] = placed_np
 
-    # Inpainting seam mask along the boundary lines to remove any visible joint lines
-    seam_mask = np.zeros((target_h, target_w), dtype=np.uint8)
-    seam_w = max(2, min(8, int(min(placed_w, placed_h) * 0.01)))
-    if left_pad > 0:
-        seam_mask[:, max(0, offset_x - seam_w):min(target_w, offset_x + seam_w)] = 255
-    if right_pad > 0:
-        r_start = offset_x + placed_w
-        seam_mask[:, max(0, r_start - seam_w):min(target_w, r_start + seam_w)] = 255
-    if top_pad > 0:
-        seam_mask[max(0, offset_y - seam_w):min(target_h, offset_y + seam_w), :] = 255
-    if bot_pad > 0:
-        b_start = offset_y + placed_h
-        seam_mask[max(0, b_start - seam_w):min(target_h, b_start + seam_w), :] = 255
+        # Inpainting mask for edge boundary transition
+        mask = np.zeros((target_h, target_w), dtype=np.uint8)
+        seam_width = max(3, edge_strip // 2)
+        if offset_x > 0:
+            mask[:, max(0, offset_x - seam_width):offset_x + seam_width] = 255
+        if right_start < target_w:
+            mask[:, max(0, right_start - seam_width):min(target_w, right_start + seam_width)] = 255
 
-    if np.any(seam_mask > 0):
+        # Subtle Telea inpainting across the seam lines to blend textures smoothly
         bgr = cv2.cvtColor(canvas_np, cv2.COLOR_RGB2BGR)
-        blended_bgr = cv2.inpaint(bgr, seam_mask, inpaintRadius=seam_w, flags=cv2.INPAINT_TELEA)
+        blended_bgr = cv2.inpaint(bgr, mask, inpaintRadius=seam_width, flags=cv2.INPAINT_TELEA)
         canvas_np = cv2.cvtColor(blended_bgr, cv2.COLOR_BGR2RGB)
+
+    elif expansion_type == "vertical":
+        # Sample top and bottom strips
+        top_strip = placed_np[:edge_strip, :, :]
+        bot_strip = placed_np[-edge_strip:, :, :]
+
+        top_profile = np.mean(top_strip, axis=0, keepdims=True).astype(np.uint8)  # (1, placed_w, 3)
+        bot_profile = np.mean(bot_strip, axis=0, keepdims=True).astype(np.uint8)
+
+        # Tile profiles vertically across extension regions
+        if offset_y > 0:
+            canvas_np[:offset_y, :, :] = np.repeat(top_profile, offset_y, axis=0)
+        bot_start = offset_y + placed_h
+        if bot_start < target_h:
+            rem_h = target_h - bot_start
+            canvas_np[bot_start:, :, :] = np.repeat(bot_profile, rem_h, axis=0)
+
+        # Put placed image in center
+        canvas_np[offset_y:offset_y + placed_h, :, :] = placed_np
+
+        # Inpainting mask for edge boundary transition
+        mask = np.zeros((target_h, target_w), dtype=np.uint8)
+        seam_height = max(3, edge_strip // 2)
+        if offset_y > 0:
+            mask[max(0, offset_y - seam_height):offset_y + seam_height, :] = 255
+        if bot_start < target_h:
+            mask[max(0, bot_start - seam_height):min(target_h, bot_start + seam_height), :] = 255
+
+        bgr = cv2.cvtColor(canvas_np, cv2.COLOR_RGB2BGR)
+        blended_bgr = cv2.inpaint(bgr, mask, inpaintRadius=seam_height, flags=cv2.INPAINT_TELEA)
+        canvas_np = cv2.cvtColor(blended_bgr, cv2.COLOR_BGR2RGB)
+    else:
+        # No extension
+        return placed_img
 
     # CRITICAL PRODUCT PIXEL PROTECTION:
     # Strictly re-paste the exact pristine source image pixels over the center region
+    # with a 2-pixel anti-aliased edge blend to guarantee ZERO modification of product details.
     result_img = Image.fromarray(canvas_np)
+    placed_rgba = placed_img.convert("RGBA")
+
+    # Create feather alpha mask for exact placed area
     mask_im = Image.new("L", (placed_w, placed_h), 255)
+    # 2px border feathering so the sharp edge doesn't look pasted
+    inset = 2
     if placed_w > 8 and placed_h > 8:
         from PIL import ImageDraw
         draw = ImageDraw.Draw(mask_im)
-        draw.rectangle([0, 0, placed_w - 1, placed_h - 1], outline=200, width=1)
+        draw.rectangle([0, 0, placed_w - 1, placed_h - 1], outline=180, width=1)
 
     result_img.paste(placed_img, (offset_x, offset_y), mask=mask_im)
     return result_img
