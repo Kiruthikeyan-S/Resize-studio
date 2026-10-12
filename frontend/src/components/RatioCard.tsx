@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Download, RefreshCw, Crop, CheckCircle2, AlertCircle, Loader2, Maximize2, Info } from 'lucide-react';
+import { Download, RefreshCw, Crop, CheckCircle2, AlertCircle, Loader2, Maximize2 } from 'lucide-react';
 import type { RatioOutput } from '../services/api';
 import { api } from '../services/api';
 
@@ -9,7 +9,6 @@ interface RatioCardProps {
   onUpdate: (updated: RatioOutput) => void;
   onOpenCropEditor: (item: RatioOutput) => void;
   onOpenPreviewModal: (item: RatioOutput) => void;
-  onSwitchToSafeFit?: () => void;
 }
 
 export const RatioCard: React.FC<RatioCardProps> = ({
@@ -18,7 +17,6 @@ export const RatioCard: React.FC<RatioCardProps> = ({
   onUpdate,
   onOpenCropEditor,
   onOpenPreviewModal,
-  onSwitchToSafeFit,
 }) => {
   const [isReplacing, setIsReplacing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -118,54 +116,6 @@ export const RatioCard: React.FC<RatioCardProps> = ({
           </div>
         </div>
       </div>
-
-      {/* Subject boundary, trimmed edges, or automatic fallback notice */}
-      {item.fallback_reason ? (
-        <div className="px-3 py-1.5 bg-violet-50/80 border-t border-violet-100 flex items-center justify-between text-[11px] text-violet-900 font-medium">
-          <span className="flex items-center gap-1.5 truncate" title={item.fallback_reason}>
-            <Info className="w-3.5 h-3.5 shrink-0 text-violet-600" />
-            <span className="truncate">{item.fallback_reason}</span>
-          </span>
-        </div>
-      ) : item.fit_info && !item.fit_info.fits_completely && item.mode === 'smart_crop' ? (
-        <div className="px-3 py-1.5 bg-amber-50 border-t border-amber-200/60 flex items-center justify-between text-[11px] text-amber-900 font-medium">
-          <span className="flex items-center gap-1 truncate" title={item.fit_info.message}>
-            <Info className="w-3.5 h-3.5 shrink-0 text-amber-600" />
-            <span className="truncate">Subject trimmed on sides</span>
-          </span>
-          {onSwitchToSafeFit && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onSwitchToSafeFit();
-              }}
-              className="text-[10px] underline text-amber-800 hover:text-amber-950 font-semibold shrink-0 ml-1.5 cursor-pointer"
-            >
-              Show Entire Image
-            </button>
-          )}
-        </div>
-      ) : item.edges_trimmed && item.mode === 'smart_crop' ? (
-        <div className="px-3 py-1.5 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-700 font-medium">
-          <span className="flex items-center gap-1 truncate">
-            <Info className="w-3.5 h-3.5 shrink-0 text-violet-600" />
-            <span>Full-frame focus active</span>
-          </span>
-          {onSwitchToSafeFit && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onSwitchToSafeFit();
-              }}
-              className="text-[10px] underline text-violet-700 hover:text-violet-900 font-semibold shrink-0 ml-1 cursor-pointer"
-            >
-              Show Entire Image
-            </button>
-          )}
-        </div>
-      ) : null}
 
       {/* Card Footer */}
       <div className="p-3.5 border-t border-slate-100 bg-white space-y-3">

@@ -127,36 +127,6 @@ export const App: React.FC = () => {
     setPreviewModalItem(null);
   };
 
-  const handleGenerate = async (customMode?: 'smart_crop' | 'safe_fit' | 'manual_crop') => {
-    if (!activeImage) return;
-    const targetMode = customMode || settings.mode;
-    setIsGenerating(true);
-    setErrorMessage(null);
-
-    const activeSettings: ConvertSettings = {
-      ...settings,
-      image_id: activeImage.image_id,
-      mode: targetMode,
-    };
-
-    try {
-      const response = await api.convertImage(activeSettings);
-      setOutputsByModeMap((prev) => ({
-        ...prev,
-        [activeImage.image_id]: {
-          ...(prev[activeImage.image_id] || {}),
-          [targetMode]: response.outputs,
-        },
-      }));
-    } catch (err: any) {
-      setErrorMessage(
-        err.response?.data?.detail || err.message || 'Failed to generate aspect ratios.'
-      );
-    } finally {
-      setIsGenerating(false);
-    }
-  };
-
   const handleBatchConvertAll = async () => {
     if (images.length === 0) return;
     setIsBatchGenerating(true);
@@ -186,15 +156,6 @@ export const App: React.FC = () => {
     }
 
     setIsBatchGenerating(false);
-  };
-
-  const handleSwitchToSafeFit = () => {
-    setSettings((prev) => ({ ...prev, mode: 'safe_fit' }));
-    // If safe_fit outputs already exist for active image, user immediately sees them.
-    // If not, generate them now.
-    if (!activeImage || !outputsByModeMap[activeImage.image_id]?.['safe_fit']) {
-      handleGenerate('safe_fit');
-    }
   };
 
   const handleUpdateSingleRatio = (updated: RatioOutput) => {
@@ -409,7 +370,6 @@ export const App: React.FC = () => {
                             onUpdate={handleUpdateSingleRatio}
                             onOpenCropEditor={(it: RatioOutput) => setEditingItem(it)}
                             onOpenPreviewModal={(it: RatioOutput) => setPreviewModalItem(it)}
-                            onSwitchToSafeFit={handleSwitchToSafeFit}
                           />
                         </div>
                       ))}

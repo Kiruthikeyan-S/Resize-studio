@@ -9,7 +9,6 @@ interface PreviewGridProps {
   onUpdateRatio: (updated: RatioOutput) => void;
   onOpenCropEditor: (item: RatioOutput) => void;
   onOpenPreviewModal: (item: RatioOutput) => void;
-  onSwitchToSafeFit?: () => void;
 }
 
 export const PreviewGrid: React.FC<PreviewGridProps> = ({
@@ -18,7 +17,6 @@ export const PreviewGrid: React.FC<PreviewGridProps> = ({
   onUpdateRatio,
   onOpenCropEditor,
   onOpenPreviewModal,
-  onSwitchToSafeFit,
 }) => {
   if (outputs.length === 0) return null;
 
@@ -46,7 +44,6 @@ export const PreviewGrid: React.FC<PreviewGridProps> = ({
             onUpdate={onUpdateRatio}
             onOpenCropEditor={onOpenCropEditor}
             onOpenPreviewModal={onOpenPreviewModal}
-            onSwitchToSafeFit={onSwitchToSafeFit}
           />
         ))}
       </div>
