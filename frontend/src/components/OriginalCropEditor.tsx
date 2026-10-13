@@ -70,6 +70,7 @@ export const OriginalCropEditor: React.FC<OriginalCropEditorProps> = ({
   const [inputHeight, setInputHeight] = useState<string>(String(crop.height));
 
   const [isSaving, setIsSaving] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // References
@@ -256,7 +257,7 @@ export const OriginalCropEditor: React.FC<OriginalCropEditorProps> = ({
     }
   };
 
-  // Done finalizes the selected crop without triggering any resizing.
+  // Apply & Update
   const handleApply = async () => {
     setIsSaving(true);
     setErrorMessage(null);
@@ -271,6 +272,26 @@ export const OriginalCropEditor: React.FC<OriginalCropEditorProps> = ({
       );
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  // Revert to raw untouched original
+  const handleResetToUntouched = async () => {
+    setIsResetting(true);
+    setErrorMessage(null);
+    try {
+      const reset = await api.resetOriginalFraming(originalData.image_id);
+      const fullDefault = createDefaultCrop(reset.raw_width || reset.width, reset.raw_height || reset.height, null, 0.9);
+      setCrop(fullDefault);
+      setPreset('free');
+      setLockAspect(false);
+      await onApply(reset);
+    } catch (err: any) {
+      setErrorMessage(
+        err.response?.data?.detail || err.message || 'Failed to revert image.'
+      );
+    } finally {
+      setIsResetting(false);
     }
   };
 
@@ -510,6 +531,17 @@ export const OriginalCropEditor: React.FC<OriginalCropEditorProps> = ({
               <RotateCcw className="w-3.5 h-3.5 text-slate-500" />
               <span>Reset Crop</span>
             </button>
+
+            {originalData.is_cropped_master && (
+              <button
+                type="button"
+                onClick={handleResetToUntouched}
+                disabled={isResetting}
+                className="text-xs text-amber-700 hover:text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200 px-3 py-2 rounded-xl transition-colors cursor-pointer font-medium"
+              >
+                {isResetting ? 'Resetting...' : 'Revert to Raw Original'}
+              </button>
+            )}
           </div>
 
           <div className="flex items-center gap-2.5 ml-auto">
@@ -531,12 +563,12 @@ export const OriginalCropEditor: React.FC<OriginalCropEditorProps> = ({
               {isSaving ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Saving Crop...</span>
+                  <span>Applying Crop...</span>
                 </>
               ) : (
                 <>
                   <Check className="w-4 h-4" />
-                  <span>Done</span>
+                  <span>Apply & Update</span>
                 </>
               )}
             </button>

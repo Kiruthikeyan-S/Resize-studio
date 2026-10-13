@@ -5,12 +5,12 @@ import { ImageQueueBar } from './components/ImageQueueBar';
 import { ConversionSettings } from './components/ConversionSettings';
 import { RatioCard } from './components/RatioCard';
 import { DownloadAll } from './components/DownloadAll';
+import { CropEditor } from './components/CropEditor';
 import { OriginalCropEditor } from './components/OriginalCropEditor';
-import { CroppedImageReview } from './components/CroppedImageReview';
 import { PreviewModal } from './components/PreviewModal';
 import type { UploadResponse, RatioOutput, ConvertSettings } from './services/api';
 import { api } from './services/api';
-import { AlertCircle } from 'lucide-react';
+import { AlertCircle, Crop, RotateCcw, Home, Check } from 'lucide-react';
 
 export type ProcessingMode = 'smart_crop' | 'safe_fit' | 'manual_crop';
 
@@ -23,13 +23,16 @@ export const App: React.FC = () => {
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [isBatchGenerating, setIsBatchGenerating] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [editingItem, setEditingItem] = useState<RatioOutput | null>(null);
   const [previewModalItem, setPreviewModalItem] = useState<RatioOutput | null>(null);
+  const [isEditingOriginal, setIsEditingOriginal] = useState<boolean>(false);
+  const [isEditingCrop, setIsEditingCrop] = useState<boolean>(false);
   // Generation revision per image (used so ZIP requests can never mix old and new outputs)
   const [revisionMap, setRevisionMap] = useState<Record<string, number>>({});
 
   const [settings, setSettings] = useState<ConvertSettings>({
     image_id: '',
-    mode: 'safe_fit',
+    mode: 'smart_crop',
     bg_color_hex: '#F8FAFC',
     is_transparent: false,
     export_format: 'jpeg',
@@ -39,7 +42,7 @@ export const App: React.FC = () => {
   });
 
   const activeImage = images.find((img) => img.image_id === activeImageId) || images[0] || null;
-  // Five ratio cards appear horizontally after the user explicitly resizes the approved crop.
+  // Strictly display outputs for active image and current selected mode, sorted in specified vertical order:
   // 1. Square (1:1), 2. Portrait (4:5), 3. Portrait (3:4), 4. Landscape (16:9), 5. Landscape (5:4)
   const ratioOrder = ['square_1x1', 'portrait_4x5', 'portrait_3x4', 'landscape_16x9', 'landscape_5x4'];
   const rawOutputs = activeImage
@@ -63,6 +66,8 @@ export const App: React.FC = () => {
         ...prev,
         image_id: uploadedList[0].image_id,
       }));
+      // Inline left panel editor is already displayed directly
+      setIsEditingOriginal(false);
     }
     setErrorMessage(null);
   };
@@ -73,6 +78,7 @@ export const App: React.FC = () => {
       ...prev,
       image_id: imageId,
     }));
+    setIsEditingCrop(false);
   };
 
   const handleRemoveImage = async (imageId: string) => {
@@ -120,9 +126,31 @@ export const App: React.FC = () => {
     setImages([]);
     setActiveImageId('');
     setOutputsByModeMap({});
-    setRevisionMap({});
     setErrorMessage(null);
+    setEditingItem(null);
     setPreviewModalItem(null);
+    setIsEditingCrop(false);
+  };
+
+  const handleRevertToRaw = async () => {
+    if (!activeImage) return;
+    try {
+      const reset = await api.resetOriginalFraming(activeImage.image_id);
+      setImages((prev) =>
+        prev.map((img) => (img.image_id === reset.image_id ? reset : img))
+      );
+      setOutputsByModeMap((prev) => ({ ...prev, [reset.image_id]: {} }));
+      setRevisionMap((prev) => {
+        const copy = { ...prev };
+        delete copy[reset.image_id];
+        return copy;
+      });
+      setIsEditingCrop(true);
+    } catch (err: any) {
+      setErrorMessage(
+        err.response?.data?.detail || err.message || 'Failed to revert image.'
+      );
+    }
   };
 
   const handleBatchConvertAll = async () => {
@@ -130,16 +158,9 @@ export const App: React.FC = () => {
     setIsBatchGenerating(true);
     setErrorMessage(null);
 
-    const currentMode = 'safe_fit';
-    // Never resize a raw upload before the customer has clicked Done.
-    const approved = images.filter((img) => img.is_cropped_master);
-    if (approved.length === 0) {
-      setIsBatchGenerating(false);
-      setErrorMessage('Crop each image and click Done before resizing.');
-      return;
-    }
+    const currentMode = settings.mode;
 
-    for (const img of approved) {
+    for (const img of images) {
       const imageSettings: ConvertSettings = {
         ...settings,
         image_id: img.image_id,
@@ -166,57 +187,65 @@ export const App: React.FC = () => {
     setIsBatchGenerating(false);
   };
 
+  const handleUpdateSingleRatio = (updated: RatioOutput) => {
+    if (!activeImage) return;
+    const currentMode = settings.mode;
+    setOutputsByModeMap((prev) => {
+      const existingForMode = prev[activeImage.image_id]?.[currentMode] || [];
+      const updatedList = existingForMode.map((item) =>
+        item.safe_key === updated.safe_key ? updated : item
+      );
+      return {
+        ...prev,
+        [activeImage.image_id]: {
+          ...(prev[activeImage.image_id] || {}),
+          [currentMode]: updatedList,
+        },
+      };
+    });
+  };
 
-  // DONE: save the exact crop, discard prior outputs, and stop. Do not resize yet.
   const handleUpdateOriginalSuccess = async (updatedData: UploadResponse) => {
+    // 1. Update the image entry in images list with new dimensions, version, and master crop status
     setImages((prev) =>
       prev.map((img) => (img.image_id === updatedData.image_id ? updatedData : img))
     );
+
+    // 2. Drop outputs from any previous generation so old results/selections can never be shown or downloaded
     setOutputsByModeMap((prev) => ({ ...prev, [updatedData.image_id]: {} }));
     setRevisionMap((prev) => {
-      const next = { ...prev };
-      delete next[updatedData.image_id];
-      return next;
+      const copy = { ...prev };
+      delete copy[updatedData.image_id];
+      return copy;
     });
-    setErrorMessage(null);
-  };
 
-  // RESIZE: the only entry point for generating the five ratios / fifteen fixed files.
-  // The backend reads working.png (the approved crop) as the source.
-  const handleResizeActiveImage = async () => {
-    if (!activeImage?.is_cropped_master || isGenerating) {
-      setErrorMessage('Please crop the image and click Done before resizing.');
-      return;
-    }
+    // 3. Generate all ratios (and their Large/Medium/Small sizes) from this finalized working image only
     setIsGenerating(true);
     setErrorMessage(null);
-    // Do not show an old preview or offer an old ZIP while a new resize is running.
-    setOutputsByModeMap((prev) => ({ ...prev, [activeImage.image_id]: {} }));
-    setRevisionMap((prev) => {
-      const next = { ...prev };
-      delete next[activeImage.image_id];
-      return next;
-    });
+
+    const activeMode = settings.mode || 'smart_crop';
+    const activeSettings: ConvertSettings = {
+      ...settings,
+      image_id: updatedData.image_id,
+      mode: activeMode,
+    };
+
     try {
-      const response = await api.convertImage({
-        ...settings,
-        image_id: activeImage.image_id,
-        mode: 'safe_fit',
-      });
+      const response = await api.convertImage(activeSettings);
       setOutputsByModeMap((prev) => ({
         ...prev,
-        [activeImage.image_id]: {
-          [settings.mode]: response.outputs,
+        [updatedData.image_id]: {
+          ...(prev[updatedData.image_id] || {}),
+          [activeMode]: response.outputs,
         },
       }));
       if (response.revision !== undefined) {
-        setRevisionMap((prev) => ({
-          ...prev,
-          [activeImage.image_id]: response.revision as number,
-        }));
+        setRevisionMap((prev) => ({ ...prev, [updatedData.image_id]: response.revision as number }));
       }
     } catch (err: any) {
-      setErrorMessage(err.response?.data?.detail || err.message || 'Resize failed.');
+      setErrorMessage(
+        err.response?.data?.detail || err.message || 'Failed to auto-generate 5 ratios after applying framing.'
+      );
     } finally {
       setIsGenerating(false);
     }
@@ -287,23 +316,105 @@ export const App: React.FC = () => {
               onGoHome={handleReset}
             />
 
-            {/* Upper Section: Original Image Framing Editor & Compact Export Settings */}
+            {/* Upper Section: Manual Crop Editor (when uncropped or editing) OR Approved Cropped Image View */}
             <div className="space-y-6 max-w-4xl mx-auto">
-              {activeImage && (activeImage.is_cropped_master ? (
-                <CroppedImageReview
-                  image={activeImage}
-                  isResizing={isGenerating}
-                  hasOutputs={currentOutputs.length > 0}
-                  onResize={handleResizeActiveImage}
-                  onChangeImage={handleReset}
-                />
-              ) : (
+              {activeImage && (!activeImage.is_cropped_master || isEditingCrop ? (
                 <OriginalCropEditor
                   originalData={activeImage}
-                  onApply={handleUpdateOriginalSuccess}
+                  onApply={(updated) => {
+                    handleUpdateOriginalSuccess(updated);
+                    setIsEditingCrop(false);
+                  }}
+                  onClose={activeImage.is_cropped_master ? () => setIsEditingCrop(false) : undefined}
                   onChangeImage={handleReset}
                   inline={true}
                 />
+              ) : (
+                /* Approved Cropped Working Image Card - Raw background is removed, showing ONLY what was cropped */
+                <div className="bg-white border border-slate-200 rounded-2xl flex flex-col overflow-hidden shadow-xs">
+                  {/* Header */}
+                  <div className="p-4 sm:p-5 border-b border-slate-200 flex items-center justify-between bg-slate-50/70">
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-violet-100 border border-violet-200 flex items-center justify-center text-violet-700">
+                        <Check className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-semibold text-base text-slate-900">
+                            Approved Cropped Image
+                          </h3>
+                          <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200">
+                            Active Working Source
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-500 font-mono">
+                          {activeImage.original_filename} • Cropped: {activeImage.width} × {activeImage.height} px
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setIsEditingCrop(true)}
+                        className="py-1.5 px-3.5 rounded-xl border border-violet-200 bg-violet-50 hover:bg-violet-100 text-violet-700 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+                        title="Adjust or re-crop the original image"
+                      >
+                        <Crop className="w-3.5 h-3.5" />
+                        <span>Adjust / Re-Crop</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleRevertToRaw}
+                        className="py-1.5 px-3 rounded-xl border border-slate-200 hover:border-amber-300 bg-white hover:bg-amber-50 text-slate-700 hover:text-amber-700 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+                        title="Revert to untouched raw original"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5 text-amber-600" />
+                        <span>Revert to Raw</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleReset}
+                        className="py-1.5 px-3 rounded-xl border border-slate-200 hover:border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+                        title="Return to Home Screen to upload a new image"
+                      >
+                        <Home className="w-3.5 h-3.5 text-slate-500" />
+                        <span>Home Screen</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Clean Cropped Image Preview - Only the cropped region is displayed */}
+                  <div className="p-4 sm:p-6 bg-slate-900/5 flex flex-col items-center justify-center min-h-[300px] max-h-[440px] overflow-hidden select-none">
+                    <div className="relative inline-block rounded-xl overflow-hidden shadow-sm border border-slate-300 bg-white">
+                      <img
+                        src={activeImage.original_url}
+                        alt="Approved cropped working area"
+                        className="max-h-[380px] max-w-full w-auto object-contain block mx-auto rounded-lg"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Dimensions Bar */}
+                  <div className="px-5 py-3 bg-violet-50/70 border-t border-violet-100 flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-slate-700">Active Working Dimensions:</span>
+                      <span className="font-mono font-bold text-violet-700 bg-white px-2 py-0.5 rounded-md border border-violet-200">
+                        {activeImage.width} × {activeImage.height} px
+                      </span>
+                      <span className="text-slate-400">•</span>
+                      <span className="text-slate-600">
+                        The 5 aspect ratios below are generated exclusively from this cropped area.
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsEditingCrop(true)}
+                      className="text-xs font-semibold text-violet-700 hover:text-violet-900 underline cursor-pointer"
+                    >
+                      Change crop selection
+                    </button>
+                  </div>
+                </div>
               ))}
 
               {/* Compact Export Settings */}
@@ -339,7 +450,7 @@ export const App: React.FC = () => {
                       Generating 5 Ratios...
                     </p>
                     <p className="text-xs text-slate-500 max-w-md mx-auto">
-                      Resizing the approved cropped image without AI or additional cropping.
+                      Applying product-safe framing & seamless background continuation.
                     </p>
                   </div>
                 ) : currentOutputs.length === 0 ? (
@@ -349,14 +460,10 @@ export const App: React.FC = () => {
                     </div>
                     <div>
                       <h4 className="text-base font-semibold text-slate-800">
-                        Five aspect-ratio previews will appear here
+                        Your five images will appear here
                       </h4>
                       <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
-                        {activeImage?.is_cropped_master ? (
-                          <>Your crop is ready. Click <span className="font-semibold text-violet-700">Resize to 5 Ratios</span> above.</>
-                        ) : (
-                          <>Choose your crop and click <span className="font-semibold text-violet-700">Done</span> above first.</>
-                        )}
+                        Adjust composition or position above and click <span className="font-semibold text-violet-700">Apply & Update</span> to generate all 5 sizes.
                       </p>
                     </div>
                   </div>
@@ -462,6 +569,25 @@ export const App: React.FC = () => {
           </div>
         </section>
       </main>
+
+      {/* Original Image Framing Editor Modal */}
+      {isEditingOriginal && activeImage && (
+        <OriginalCropEditor
+          originalData={activeImage}
+          onClose={() => setIsEditingOriginal(false)}
+          onApply={handleUpdateOriginalSuccess}
+        />
+      )}
+
+      {/* Individual Ratio Crop Modal */}
+      {editingItem && activeImage && (
+        <CropEditor
+          item={editingItem}
+          originalData={activeImage}
+          onClose={() => setEditingItem(null)}
+          onSave={handleUpdateSingleRatio}
+        />
+      )}
 
       {/* Full-screen Inspection Modal */}
       {previewModalItem && activeImage && (
