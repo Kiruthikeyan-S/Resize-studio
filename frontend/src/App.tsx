@@ -10,7 +10,7 @@ import { OriginalCropEditor } from './components/OriginalCropEditor';
 import { PreviewModal } from './components/PreviewModal';
 import type { UploadResponse, RatioOutput, ConvertSettings } from './services/api';
 import { api } from './services/api';
-import { AlertCircle, Crop, RotateCcw, Home, Check, Loader2, Sparkles } from 'lucide-react';
+import { AlertCircle, Crop, RotateCcw, Home, Check, Loader2 } from 'lucide-react';
 
 export type ProcessingMode = 'direct_stretch' | 'smart_crop' | 'safe_fit' | 'manual_crop';
 
@@ -434,10 +434,7 @@ export const App: React.FC = () => {
                             <span>Resizing into 5 Ratios...</span>
                           </>
                         ) : (
-                          <>
-                            <Sparkles className="w-3.5 h-3.5" />
-                            <span>Resize</span>
-                          </>
+                          <span>Resize</span>
                         )}
                       </button>
                     </div>
