@@ -362,6 +362,9 @@ def call_gemini_image_edit(
         return None, f"Gemini error: {str(e)[:120]}"
 
 
+_GROQ_BG_HEX_CACHE: Dict[str, str] = {}
+
+
 def call_groq_vision_guided_expansion(
     source_img: Image.Image,
     target_w: int,
@@ -390,34 +393,39 @@ def call_groq_vision_guided_expansion(
         resized.save(buffer, format="JPEG", quality=85)
         b64_img = base64.b64encode(buffer.getvalue()).decode("utf-8")
 
-        system_prompt = (
-            "Analyze the image background around the perimeter. Identify the primary background color as a 6-character hex code (e.g. #3A4556). "
-            "Respond ONLY with valid JSON: {\"background_hex\": \"#RRGGBB\", \"description\": \"...\"}"
-        )
-        bg_hex = "#F8FAFC"
-        try:
-            chat_res = client.chat.completions.create(
-                model="llama-3.2-11b-vision-preview",
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": system_prompt},
-                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}},
-                        ]
-                    }
-                ],
-                temperature=0.1,
-                max_tokens=150,
-                response_format={"type": "json_object"},
+        cache_key = f"{w}x{h}_{len(b64_img)}"
+        if cache_key in _GROQ_BG_HEX_CACHE:
+            bg_hex = _GROQ_BG_HEX_CACHE[cache_key]
+        else:
+            system_prompt = (
+                "Analyze the image background around the perimeter. Identify the primary background color as a 6-character hex code (e.g. #3A4556). "
+                "Respond ONLY with valid JSON: {\"background_hex\": \"#RRGGBB\", \"description\": \"...\"}"
             )
-            raw_content = chat_res.choices[0].message.content or "{}"
-            parsed = json.loads(raw_content)
-            extracted_hex = parsed.get("background_hex")
-            if extracted_hex and extracted_hex.startswith("#") and len(extracted_hex) == 7:
-                bg_hex = extracted_hex
-        except Exception:
-            pass
+            bg_hex = "#F8FAFC"
+            try:
+                chat_res = client.chat.completions.create(
+                    model="llama-3.2-11b-vision-preview",
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": system_prompt},
+                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}},
+                            ]
+                        }
+                    ],
+                    temperature=0.1,
+                    max_tokens=150,
+                    response_format={"type": "json_object"},
+                )
+                raw_content = chat_res.choices[0].message.content or "{}"
+                parsed = json.loads(raw_content)
+                extracted_hex = parsed.get("background_hex")
+                if extracted_hex and extracted_hex.startswith("#") and len(extracted_hex) == 7:
+                    bg_hex = extracted_hex
+                    _GROQ_BG_HEX_CACHE[cache_key] = bg_hex
+            except Exception:
+                pass
 
         pw, ph, ox, oy, ext_type = calculate_expansion_canvas(w, h, target_w, target_h)
         expanded = studio_texture_background_expansion(
