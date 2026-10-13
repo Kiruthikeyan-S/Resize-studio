@@ -14,10 +14,12 @@ from services.crop_engine import (
     calculate_crop_window,
     detect_saliency_center,
     detect_saliency_bbox,
+    direct_stretch,
     SIZE_KEYS,
     SIZE_LABELS,
     SIZE_PRESETS,
 )
+from services.ai_background_expander import expand_background_ai, get_configured_ai_provider
 from services.quality_manager import (
     fix_exif_orientation,
     ensure_srgb_profile,
@@ -507,6 +509,328 @@ def generate_all_ratios(
         "outputs": results,
         "variants": flat_variants,
         "outputs_by_mode": outputs_by_mode,
+    }
+
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(session_data, f, indent=2)
+
+    return session_data
+
+
+def generate_comparison_pipeline(
+    image_id: str,
+    export_format: str = "jpeg",
+    quality: int = 90,
+    bg_color_hex: str = "#F8FAFC",
+    is_transparent: bool = False,
+    sharpen: bool = False,
+    denoise: bool = False,
+    allow_opencv_fallback: bool = False,
+    prompt_hint: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Generate both Standard Resize (Direct Stretch) and AI Enhanced Resize
+    from the approved cropped working image (working.png).
+    Generates 15 Standard images + 15 AI images = up to 30 fixed output files.
+    Saves separated output directories:
+      generated/{image_id}/standard/{safe_key}/
+      generated/{image_id}/ai/{safe_key}/
+    Returns structured comparison rows and unified variants manifest.
+    """
+    orig_path = get_original_file_path(image_id)
+    if not orig_path or not os.path.exists(orig_path):
+        raise FileNotFoundError(f"Working cropped image not found for session {image_id}")
+
+    orig_meta = get_original_metadata(image_id) or {}
+    _, gen_session_dir = get_image_session_dirs(image_id)
+    os.makedirs(gen_session_dir, exist_ok=True)
+
+    export_format = export_format.lower()
+    if export_format not in ["jpeg", "png", "webp"]:
+        export_format = "jpeg"
+    ext = "jpg" if export_format == "jpeg" else export_format
+
+    manifest_path = os.path.join(gen_session_dir, "metadata.json")
+    prev_manifest: Dict[str, Any] = {}
+    if os.path.exists(manifest_path):
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                prev_manifest = json.load(f)
+        except Exception:
+            pass
+
+    revision = max(int(prev_manifest.get("revision", 0)) + 1, int(time.time() * 1000))
+
+    save_kwargs = {}
+    if export_format == "jpeg":
+        save_kwargs["quality"] = max(1, min(100, quality))
+        save_kwargs["subsampling"] = 0
+    elif export_format == "webp":
+        save_kwargs["quality"] = max(1, min(100, quality))
+        save_kwargs["method"] = 6
+    elif export_format == "png":
+        save_kwargs["compress_level"] = 6
+
+    # Create root method storage directories
+    std_root = os.path.join(gen_session_dir, "standard")
+    ai_root = os.path.join(gen_session_dir, "ai")
+    os.makedirs(std_root, exist_ok=True)
+    os.makedirs(ai_root, exist_ok=True)
+
+    ai_configured_provider = get_configured_ai_provider()
+    overall_ai_status = "ready" if ai_configured_provider else ("fallback" if allow_opencv_fallback else "unavailable")
+    overall_ai_message = None if ai_configured_provider else (
+        "AI provider unavailable; generated using OpenCV texture expansion."
+        if allow_opencv_fallback
+        else "AI provider not configured. Add OPENAI_API_KEY or GEMINI_API_KEY in backend/.env"
+    )
+
+    standard_outputs = []
+    ai_outputs = []
+    all_variants = []
+    comparison_rows = []
+
+    with Image.open(orig_path) as source_img:
+        source_img = ensure_srgb_profile(source_img)
+        orig_w, orig_h = source_img.size
+
+        for ratio_key, config in RATIO_CONFIGS.items():
+            safe_key = config["safe_key"]
+            tw, th = config["width"], config["height"]
+
+            # Method subdirectories
+            std_ratio_dir = os.path.join(std_root, safe_key)
+            ai_ratio_dir = os.path.join(ai_root, safe_key)
+            os.makedirs(std_ratio_dir, exist_ok=True)
+            os.makedirs(ai_ratio_dir, exist_ok=True)
+
+            # ==========================================
+            # 1. METHOD A: STANDARD RESIZE (DIRECT STRETCH)
+            # ==========================================
+            std_large_img = direct_stretch(source_img, tw, th)
+            if sharpen:
+                std_large_img = apply_mild_sharpening(std_large_img)
+            if denoise:
+                std_large_img = apply_mild_denoising(std_large_img)
+
+            if is_transparent and export_format in ["png", "webp"]:
+                std_large_img = std_large_img.convert("RGBA")
+            else:
+                std_large_img = handle_alpha_transparency(std_large_img, target_format=export_format, bg_color_hex=bg_color_hex)
+
+            # Save Standard Large
+            std_large_file = os.path.join(std_ratio_dir, f"large.{ext}")
+            std_large_img.save(std_large_file, format=export_format.upper(), **save_kwargs)
+
+            # Backward-compatibility alias files in session root
+            shutil.copyfile(std_large_file, os.path.join(gen_session_dir, f"image_{safe_key}.{ext}"))
+            shutil.copyfile(std_large_file, os.path.join(gen_session_dir, f"image_{safe_key}_large.{ext}"))
+
+            # Standard Variants (Large, Medium, Small)
+            std_variants = []
+            for size_key in SIZE_KEYS:
+                vw, vh = SIZE_PRESETS[safe_key][size_key]
+                v_img = std_large_img if std_large_img.size == (vw, vh) else std_large_img.resize((vw, vh), resample=Image.Resampling.LANCZOS)
+                v_path = os.path.join(std_ratio_dir, f"{size_key}.{ext}")
+                v_img.save(v_path, format=export_format.upper(), **save_kwargs)
+                shutil.copyfile(v_path, os.path.join(gen_session_dir, f"image_{safe_key}_{size_key}.{ext}"))
+
+                var_item = {
+                    "selection_id": f"standard:{safe_key}:{size_key}",
+                    "legacy_selection_id": f"{safe_key}:{size_key}",
+                    "method": "standard",
+                    "ratio_safe_key": safe_key,
+                    "ratio_name": config["name"],
+                    "size_key": size_key,
+                    "size_label": SIZE_LABELS[size_key],
+                    "width": vw,
+                    "height": vh,
+                    "file_name": f"standard_{safe_key}_{size_key}.{ext}",
+                    "file_path": v_path,
+                    "file_size": os.path.getsize(v_path),
+                    "status": "ready",
+                }
+                std_variants.append(var_item)
+                all_variants.append(var_item)
+
+            # Standard Thumbnail
+            thumb_scale = min(640 / tw, 640 / th, 1.0)
+            th_w, th_h = int(round(tw * thumb_scale)), int(round(th * thumb_scale))
+            std_thumb = std_large_img.resize((th_w, th_h), resample=Image.Resampling.LANCZOS)
+            std_thumb_path = os.path.join(std_ratio_dir, "thumb.webp")
+            std_thumb.save(std_thumb_path, format="WEBP", quality=88)
+            shutil.copyfile(std_thumb_path, os.path.join(gen_session_dir, f"thumb_{safe_key}.webp"))
+
+            std_output_item = {
+                "method": "standard",
+                "ratio_key": ratio_key,
+                "safe_key": safe_key,
+                "legacy_key": config.get("legacy_key"),
+                "name": config["name"],
+                "width": tw,
+                "height": th,
+                "orientation": config["orientation"],
+                "file_name": f"standard_{safe_key}_large.{ext}",
+                "file_size": os.path.getsize(std_large_file),
+                "file_path": std_large_file,
+                "version": revision,
+                "preview_url": f"/api/preview/{image_id}/{safe_key}?method=standard&v={revision}",
+                "download_url": f"/api/download/{image_id}/{safe_key}?method=standard",
+                "source_url": f"/api/original/{image_id}",
+                "source_width": orig_w,
+                "source_height": orig_h,
+                "crop_box": [0, 0, orig_w, orig_h],
+                "mode": "direct_stretch",
+                "status": "ready",
+                "variants": std_variants,
+            }
+            standard_outputs.append(std_output_item)
+
+            # ==========================================
+            # 2. METHOD B: AI ENHANCED RESIZE
+            # ==========================================
+            ai_img, ai_meta = expand_background_ai(
+                img=source_img,
+                target_w=tw,
+                target_h=th,
+                prompt_hint=prompt_hint,
+                bg_color_hex=bg_color_hex,
+                allow_opencv_fallback=allow_opencv_fallback,
+            )
+
+            ai_status = ai_meta["status"]
+            ai_provider = ai_meta["provider"]
+            ai_err = ai_meta["error_message"]
+
+            ai_variants = []
+            ai_large_file = None
+            ai_large_size = 0
+
+            if ai_img is not None:
+                if sharpen:
+                    ai_img = apply_mild_sharpening(ai_img)
+                if denoise:
+                    ai_img = apply_mild_denoising(ai_img)
+
+                if is_transparent and export_format in ["png", "webp"]:
+                    ai_img = ai_img.convert("RGBA")
+                else:
+                    ai_img = handle_alpha_transparency(ai_img, target_format=export_format, bg_color_hex=bg_color_hex)
+
+                ai_large_file = os.path.join(ai_ratio_dir, f"large.{ext}")
+                ai_img.save(ai_large_file, format=export_format.upper(), **save_kwargs)
+                ai_large_size = os.path.getsize(ai_large_file)
+
+                # Save AI Variants
+                for size_key in SIZE_KEYS:
+                    vw, vh = SIZE_PRESETS[safe_key][size_key]
+                    v_img = ai_img if ai_img.size == (vw, vh) else ai_img.resize((vw, vh), resample=Image.Resampling.LANCZOS)
+                    v_path = os.path.join(ai_ratio_dir, f"{size_key}.{ext}")
+                    v_img.save(v_path, format=export_format.upper(), **save_kwargs)
+
+                    var_item = {
+                        "selection_id": f"ai:{safe_key}:{size_key}",
+                        "method": "ai",
+                        "ratio_safe_key": safe_key,
+                        "ratio_name": config["name"],
+                        "size_key": size_key,
+                        "size_label": SIZE_LABELS[size_key],
+                        "width": vw,
+                        "height": vh,
+                        "file_name": f"ai_{safe_key}_{size_key}.{ext}",
+                        "file_path": v_path,
+                        "file_size": os.path.getsize(v_path),
+                        "status": ai_status,
+                    }
+                    ai_variants.append(var_item)
+                    all_variants.append(var_item)
+
+                # AI Thumbnail
+                ai_thumb = ai_img.resize((th_w, th_h), resample=Image.Resampling.LANCZOS)
+                ai_thumb_path = os.path.join(ai_ratio_dir, "thumb.webp")
+                ai_thumb.save(ai_thumb_path, format="WEBP", quality=88)
+            else:
+                for size_key in SIZE_KEYS:
+                    vw, vh = SIZE_PRESETS[safe_key][size_key]
+                    var_item = {
+                        "selection_id": f"ai:{safe_key}:{size_key}",
+                        "method": "ai",
+                        "ratio_safe_key": safe_key,
+                        "ratio_name": config["name"],
+                        "size_key": size_key,
+                        "size_label": SIZE_LABELS[size_key],
+                        "width": vw,
+                        "height": vh,
+                        "file_name": f"ai_{safe_key}_{size_key}.{ext}",
+                        "file_path": None,
+                        "file_size": 0,
+                        "status": ai_status,
+                    }
+                    ai_variants.append(var_item)
+                    all_variants.append(var_item)
+
+            ai_output_item = {
+                "method": "ai",
+                "ratio_key": ratio_key,
+                "safe_key": safe_key,
+                "legacy_key": config.get("legacy_key"),
+                "name": config["name"],
+                "width": tw,
+                "height": th,
+                "orientation": config["orientation"],
+                "file_name": f"ai_{safe_key}_large.{ext}",
+                "file_size": ai_large_size,
+                "file_path": ai_large_file,
+                "version": revision,
+                "preview_url": f"/api/preview/{image_id}/{safe_key}?method=ai&v={revision}",
+                "download_url": f"/api/download/{image_id}/{safe_key}?method=ai",
+                "source_url": f"/api/original/{image_id}",
+                "source_width": orig_w,
+                "source_height": orig_h,
+                "crop_box": [0, 0, orig_w, orig_h],
+                "mode": "ai_expand",
+                "status": ai_status,
+                "provider": ai_provider,
+                "error_message": ai_err,
+                "variants": ai_variants,
+            }
+            ai_outputs.append(ai_output_item)
+
+            # Comparison Row
+            comparison_rows.append({
+                "safe_key": safe_key,
+                "ratio_key": ratio_key,
+                "name": config["name"],
+                "width": tw,
+                "height": th,
+                "orientation": config["orientation"],
+                "standard": std_output_item,
+                "ai": ai_output_item,
+                "preferred_method": "standard",
+            })
+
+    session_data = {
+        "image_id": image_id,
+        "original_filename": orig_meta.get("original_filename", "image"),
+        "original_width": orig_meta.get("width"),
+        "original_height": orig_meta.get("height"),
+        "export_format": export_format,
+        "quality": quality,
+        "revision": revision,
+        "generated_at": time.time(),
+        "standard": {
+            "status": "ready",
+            "outputs": standard_outputs,
+        },
+        "ai": {
+            "status": overall_ai_status,
+            "provider": ai_configured_provider,
+            "error_message": overall_ai_message,
+            "outputs": ai_outputs,
+        },
+        "rows": comparison_rows,
+        "outputs": standard_outputs,
+        "variants": all_variants,
     }
 
     with open(manifest_path, "w", encoding="utf-8") as f:

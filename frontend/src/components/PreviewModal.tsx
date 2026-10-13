@@ -16,8 +16,10 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
 }) => {
   if (!item) return null;
 
+  const method = item.method || 'standard';
+
   const handleDownload = () => {
-    const url = api.getDownloadUrl(imageId, item.safe_key, item.mode);
+    const url = api.getDownloadUrl(imageId, item.safe_key, item.mode, undefined, method);
     const link = document.createElement('a');
     link.href = url;
     link.setAttribute('download', item.file_name);
@@ -42,14 +44,23 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
           <div className="flex items-center gap-2.5">
             <Maximize2 className="w-4 h-4 text-violet-600" />
             <div>
-              <h3 className="font-semibold text-sm text-slate-900 flex items-center gap-2">
-                <span>{item.name}</span>
+              <div className="flex items-center gap-2">
+                <h3 className="font-semibold text-sm text-slate-900">
+                  {item.name}
+                </h3>
                 <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-violet-100 text-violet-700 border border-violet-200 font-semibold">
                   {item.ratio_key}
                 </span>
-              </h3>
+                <span className={`text-[10px] font-semibold px-2 py-0.5 rounded border ${
+                  method === 'ai'
+                    ? 'bg-purple-100 text-purple-700 border-purple-200'
+                    : 'bg-slate-100 text-slate-700 border-slate-200'
+                }`}>
+                  {method === 'ai' ? 'AI Enhanced' : 'Standard'}
+                </span>
+              </div>
               <p className="text-[11px] text-slate-500 font-mono">
-                {item.width} × {item.height} px • {formatBytes(item.file_size)} • {item.mode === 'smart_crop' ? 'Full-Frame Photo' : 'Entire Image Visible'}
+                {item.width} × {item.height} px • {formatBytes(item.file_size)}
               </p>
             </div>
           </div>
@@ -65,7 +76,7 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
         <div className="p-4 sm:p-6 bg-slate-100 flex items-center justify-center overflow-auto flex-1 min-h-[350px]">
           <div className="relative max-h-[65vh] max-w-full flex items-center justify-center rounded-xl overflow-hidden border border-slate-200 bg-white shadow-sm">
             <img
-              src={api.getFullPreviewUrl(imageId, item.safe_key, item.version || 1)}
+              src={api.getFullPreviewUrl(imageId, item.safe_key, item.version || 1, item.mode, undefined, method)}
               alt={item.name}
               className="max-h-[65vh] max-w-full object-contain"
             />

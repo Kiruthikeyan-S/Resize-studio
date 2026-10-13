@@ -28,6 +28,8 @@ export interface FitInfo {
 
 export interface OutputVariant {
   selection_id: string;
+  legacy_selection_id?: string;
+  method?: 'standard' | 'ai';
   ratio_safe_key: string;
   ratio_name: string;
   size_key: 'large' | 'medium' | 'small';
@@ -36,12 +38,14 @@ export interface OutputVariant {
   height: number;
   file_name: string;
   file_size: number;
+  status?: string;
 }
 
 export interface RatioOutput {
   ratio_key: string;
   safe_key: string;
   legacy_key?: string;
+  method?: 'standard' | 'ai';
   name: string;
   width: number;
   height: number;
@@ -56,22 +60,63 @@ export interface RatioOutput {
   source_height: number;
   crop_box: [number, number, number, number];
   mode: string;
+  status?: 'ready' | 'unavailable' | 'failed' | 'fallback';
+  provider?: string;
+  error_message?: string;
   edges_trimmed?: boolean;
   fit_info?: FitInfo;
   fallback_reason?: string;
   variants?: OutputVariant[];
 }
 
+export interface ComparisonRow {
+  safe_key: string;
+  ratio_key: string;
+  name: string;
+  width: number;
+  height: number;
+  orientation: string;
+  standard: RatioOutput;
+  ai: RatioOutput;
+  preferred_method: 'standard' | 'ai';
+}
+
 export interface ConvertSettings {
   image_id: string;
-  mode: 'direct_stretch' | 'smart_crop' | 'ai_expand' | 'safe_fit' | 'manual_crop';
+  mode: 'direct_stretch' | 'comparison' | 'smart_crop' | 'ai_expand' | 'safe_fit' | 'manual_crop';
   bg_color_hex: string;
   is_transparent: boolean;
   export_format: 'jpeg' | 'png' | 'webp';
   quality: number;
   sharpen: boolean;
   denoise: boolean;
+  allow_opencv_fallback?: boolean;
+  prompt_hint?: string;
   custom_crops?: Record<string, [number, number, number, number]>;
+}
+
+export interface ConvertComparisonSettings {
+  image_id: string;
+  export_format: 'jpeg' | 'png' | 'webp';
+  quality: number;
+  bg_color_hex: string;
+  is_transparent: boolean;
+  sharpen: boolean;
+  denoise: boolean;
+  allow_opencv_fallback?: boolean;
+  prompt_hint?: string;
+}
+
+export interface ConvertComparisonResponse {
+  image_id: string;
+  original_filename: string;
+  export_format: string;
+  revision: number;
+  ai_status: 'ready' | 'unavailable' | 'failed' | 'fallback';
+  ai_provider?: string;
+  ai_message?: string;
+  rows: ComparisonRow[];
+  outputs: RatioOutput[];
 }
 
 export interface ConvertResponse {
@@ -81,6 +126,8 @@ export interface ConvertResponse {
   mode: string;
   revision?: number;
   outputs: RatioOutput[];
+  rows?: ComparisonRow[];
+  ai_status?: string;
 }
 
 export const SIZE_KEYS = ['large', 'medium', 'small'] as const;
@@ -138,6 +185,11 @@ export const api = {
 
   async convertImage(settings: ConvertSettings): Promise<ConvertResponse> {
     const response = await axios.post<ConvertResponse>(`${API_BASE}/convert`, settings);
+    return response.data;
+  },
+
+  async convertComparison(settings: ConvertComparisonSettings): Promise<ConvertComparisonResponse> {
+    const response = await axios.post<ConvertComparisonResponse>(`${API_BASE}/convert-comparison`, settings);
     return response.data;
   },
 
@@ -228,10 +280,11 @@ export const api = {
     }
   },
 
-  getDownloadUrl(imageId: string, safeKey: string, mode?: string, size?: string): string {
+  getDownloadUrl(imageId: string, safeKey: string, mode?: string, size?: string, method?: string): string {
     const params = new URLSearchParams();
     if (mode) params.set('mode', mode);
     if (size) params.set('size', size);
+    if (method) params.set('method', method);
     const q = params.toString() ? `?${params.toString()}` : '';
     return `${API_BASE}/download/${imageId}/${safeKey}${q}`;
   },
@@ -246,19 +299,21 @@ export const api = {
     return `${API_BASE}/download-batch?image_ids=${imageIds.join(',')}${modeParam}`;
   },
 
-  getPreviewUrl(imageId: string, safeKey: string, version: number = 1, mode?: string, size?: string): string {
+  getPreviewUrl(imageId: string, safeKey: string, version: number = 1, mode?: string, size?: string, method?: string): string {
     const params = new URLSearchParams();
     params.set('v', version.toString());
     if (mode) params.set('mode', mode);
     if (size) params.set('size', size);
+    if (method) params.set('method', method);
     return `${API_BASE}/preview/${imageId}/${safeKey}?${params.toString()}`;
   },
 
-  getFullPreviewUrl(imageId: string, safeKey: string, version: number = 1, mode?: string, size?: string): string {
+  getFullPreviewUrl(imageId: string, safeKey: string, version: number = 1, mode?: string, size?: string, method?: string): string {
     const params = new URLSearchParams();
     params.set('v', version.toString());
     if (mode) params.set('mode', mode);
     if (size) params.set('size', size);
+    if (method) params.set('method', method);
     return `${API_BASE}/preview-full/${imageId}/${safeKey}?${params.toString()}`;
   },
 };

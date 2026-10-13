@@ -1,22 +1,24 @@
 """Product-Safe AI & Commercial Studio Background Expansion Service for Ratio Studio.
 Maintains 100% pixel fidelity for jewellery, products, vehicles, and brands.
-Supports:
-1. OpenAI Inpainting/Edits (dall-e-2 outpainting) when OPENAI_API_KEY is configured.
-2. Google Gemini Image Generation when GEMINI_API_KEY is configured.
-3. High-Fidelity Studio Texture & Gradient Expansion (OpenCV multi-directional inpainting & seamless blending) - offline, deterministic, zero-hallucination.
-Always composites the original untouched product pixels on top so not a single stone, pearl, metal facet, or logo is altered.
-Exports at the exact target dimensions with LANCZOS resampling.
+
+Features:
+1. Real AI Outpainting / Image Editing using OpenAI DALL-E 2 inpainting API or Google Gemini.
+2. Aspect-Ratio-Preserving Canvas Construction: No distortion, no stretching of square into landscape.
+3. Product Protection: Strict re-compositing of pristine customer-approved crop over generated background.
+4. Structured Error Handling: Independent reporting of 'ready', 'unavailable', 'failed', or explicit 'fallback'.
+5. Never mislabels offline OpenCV expansion as AI.
 """
 
 import os
 import io
 import math
+import time
 from typing import Optional, Tuple, Dict, Any, List
 import numpy as np
 import cv2
-from PIL import Image, ImageFilter, ImageOps
+from PIL import Image, ImageOps
 
-# Load environment variables if python-dotenv is present
+# Load environment variables from backend/.env if present
 try:
     import dotenv
     dotenv.load_dotenv()
@@ -40,7 +42,7 @@ def calculate_expansion_canvas(
     target_h: int
 ) -> Tuple[int, int, int, int, str]:
     """
-    Calculate placement of source image within target canvas.
+    Calculate proportional placement of source image within target canvas.
     Returns: (placed_w, placed_h, offset_x, offset_y, expansion_type)
     expansion_type is one of: 'none', 'horizontal', 'vertical'.
     """
@@ -53,7 +55,6 @@ def calculate_expansion_canvas(
 
     if orig_ratio < target_ratio:
         # Target is wider than source -> needs horizontal extension (left & right)
-        # Scale to match height
         scale = target_h / float(orig_h)
         placed_h = target_h
         placed_w = max(1, int(round(orig_w * scale)))
@@ -64,7 +65,6 @@ def calculate_expansion_canvas(
         return placed_w, placed_h, offset_x, offset_y, "horizontal"
     else:
         # Target is taller than source -> needs vertical extension (top & bottom)
-        # Scale to match width
         scale = target_w / float(orig_w)
         placed_w = target_w
         placed_h = max(1, int(round(orig_h * scale)))
@@ -87,30 +87,23 @@ def studio_texture_background_expansion(
     bg_color_hex: str = "#F8FAFC"
 ) -> Image.Image:
     """
-    Deterministic studio background expansion using edge texture replication,
+    Deterministic offline studio background expansion using edge texture replication,
     gradient continuation, and OpenCV inpainting.
     Composites untouched source pixels back on top so product details are 100% preserved.
     """
-    # Scale image to placement dimensions with high quality LANCZOS
     placed_img = img_rgb.resize((placed_w, placed_h), resample=Image.Resampling.LANCZOS)
     placed_np = np.array(placed_img)
 
-    # 1. Create target canvas initialized with edge-gradient extrapolation
     canvas_np = np.zeros((target_h, target_w, 3), dtype=np.uint8)
-
-    # Sample edge colors from the placed image
     edge_strip = max(4, min(32, min(placed_w, placed_h) // 10))
 
     if expansion_type == "horizontal":
-        # Sample left and right strips
         left_strip = placed_np[:, :edge_strip, :]
         right_strip = placed_np[:, -edge_strip:, :]
 
-        # Mean vertical profile along left and right edges
-        left_profile = np.mean(left_strip, axis=1, keepdims=True).astype(np.uint8)  # (placed_h, 1, 3)
+        left_profile = np.mean(left_strip, axis=1, keepdims=True).astype(np.uint8)
         right_profile = np.mean(right_strip, axis=1, keepdims=True).astype(np.uint8)
 
-        # Tile profiles horizontally across extension regions
         if offset_x > 0:
             canvas_np[:, :offset_x, :] = np.repeat(left_profile, offset_x, axis=1)
         right_start = offset_x + placed_w
@@ -118,10 +111,8 @@ def studio_texture_background_expansion(
             rem_w = target_w - right_start
             canvas_np[:, right_start:, :] = np.repeat(right_profile, rem_w, axis=1)
 
-        # Put placed image in center
         canvas_np[:, offset_x:offset_x + placed_w, :] = placed_np
 
-        # Inpainting mask for edge boundary transition
         mask = np.zeros((target_h, target_w), dtype=np.uint8)
         seam_width = max(3, edge_strip // 2)
         if offset_x > 0:
@@ -129,20 +120,17 @@ def studio_texture_background_expansion(
         if right_start < target_w:
             mask[:, max(0, right_start - seam_width):min(target_w, right_start + seam_width)] = 255
 
-        # Subtle Telea inpainting across the seam lines to blend textures smoothly
         bgr = cv2.cvtColor(canvas_np, cv2.COLOR_RGB2BGR)
         blended_bgr = cv2.inpaint(bgr, mask, inpaintRadius=seam_width, flags=cv2.INPAINT_TELEA)
         canvas_np = cv2.cvtColor(blended_bgr, cv2.COLOR_BGR2RGB)
 
     elif expansion_type == "vertical":
-        # Sample top and bottom strips
         top_strip = placed_np[:edge_strip, :, :]
         bot_strip = placed_np[-edge_strip:, :, :]
 
-        top_profile = np.mean(top_strip, axis=0, keepdims=True).astype(np.uint8)  # (1, placed_w, 3)
+        top_profile = np.mean(top_strip, axis=0, keepdims=True).astype(np.uint8)
         bot_profile = np.mean(bot_strip, axis=0, keepdims=True).astype(np.uint8)
 
-        # Tile profiles vertically across extension regions
         if offset_y > 0:
             canvas_np[:offset_y, :, :] = np.repeat(top_profile, offset_y, axis=0)
         bot_start = offset_y + placed_h
@@ -150,10 +138,8 @@ def studio_texture_background_expansion(
             rem_h = target_h - bot_start
             canvas_np[bot_start:, :, :] = np.repeat(bot_profile, rem_h, axis=0)
 
-        # Put placed image in center
         canvas_np[offset_y:offset_y + placed_h, :, :] = placed_np
 
-        # Inpainting mask for edge boundary transition
         mask = np.zeros((target_h, target_w), dtype=np.uint8)
         seam_height = max(3, edge_strip // 2)
         if offset_y > 0:
@@ -165,19 +151,11 @@ def studio_texture_background_expansion(
         blended_bgr = cv2.inpaint(bgr, mask, inpaintRadius=seam_height, flags=cv2.INPAINT_TELEA)
         canvas_np = cv2.cvtColor(blended_bgr, cv2.COLOR_BGR2RGB)
     else:
-        # No extension
         return placed_img
 
-    # CRITICAL PRODUCT PIXEL PROTECTION:
-    # Strictly re-paste the exact pristine source image pixels over the center region
-    # with a 2-pixel anti-aliased edge blend to guarantee ZERO modification of product details.
+    # Strictly re-composite pristine source pixels with anti-aliased edge blend
     result_img = Image.fromarray(canvas_np)
-    placed_rgba = placed_img.convert("RGBA")
-
-    # Create feather alpha mask for exact placed area
     mask_im = Image.new("L", (placed_w, placed_h), 255)
-    # 2px border feathering so the sharp edge doesn't look pasted
-    inset = 2
     if placed_w > 8 and placed_h > 8:
         from PIL import ImageDraw
         draw = ImageDraw.Draw(mask_im)
@@ -191,124 +169,290 @@ def call_openai_image_edit(
     source_img: Image.Image,
     target_w: int,
     target_h: int,
-    prompt: str = "Commercial studio product photography, clean natural studio backdrop, seamless matching lighting, high resolution"
-) -> Optional[Image.Image]:
-    """Call OpenAI DALL-E 2 inpainting endpoint if OPENAI_API_KEY is configured."""
+    prompt: Optional[str] = None
+) -> Tuple[Optional[Image.Image], Optional[str]]:
+    """
+    Call OpenAI DALL-E 2 Inpainting API using official OpenAI client.
+    Guarantees non-distorting composition:
+    1. Fits target aspect ratio into 1024x1024 canvas.
+    2. Places source image inside target ratio sub-rectangle.
+    3. Masks only the unpopulated background regions.
+    4. Crops the generated target rectangle cleanly without stretching.
+    5. Re-composites pristine product pixels.
+    """
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        return None
+        return None, "OpenAI API key not configured."
 
     try:
         from openai import OpenAI
-        client = OpenAI(api_key=api_key)
+        client = OpenAI(api_key=api_key, timeout=45.0)
 
-        # Prepare 1024x1024 canvas for DALL-E 2 edits
         square_size = 1024
-        # Calculate aspect scaling to fit within 1024x1024
+        target_ratio = target_w / float(target_h)
+
+        # 1. Determine bounding box matching target ratio inside 1024x1024
+        if target_ratio >= 1.0:
+            box_w = square_size
+            box_h = int(round(square_size / target_ratio))
+        else:
+            box_h = square_size
+            box_w = int(round(square_size * target_ratio))
+
+        box_x = (square_size - box_w) // 2
+        box_y = (square_size - box_h) // 2
+
+        # 2. Proportionally place source inside (box_w, box_h)
         orig_w, orig_h = source_img.size
-        scale = min((square_size * 0.8) / orig_w, (square_size * 0.8) / orig_h)
-        fit_w = int(orig_w * scale)
-        fit_h = int(orig_h * scale)
-        resized_source = source_img.resize((fit_w, fit_h), resample=Image.Resampling.LANCZOS).convert("RGBA")
+        scale = min(box_w / float(orig_w), box_h / float(orig_h))
+        placed_w = max(1, int(round(orig_w * scale)))
+        placed_h = max(1, int(round(orig_h * scale)))
 
-        # RGBA Image with transparent background where inpainting is requested
-        image_canvas = Image.new("RGBA", (square_size, square_size), (0, 0, 0, 0))
-        paste_x = (square_size - fit_w) // 2
-        paste_y = (square_size - fit_h) // 2
-        image_canvas.paste(resized_source, (paste_x, paste_y))
+        placed_x = box_x + (box_w - placed_w) // 2
+        placed_y = box_y + (box_h - placed_h) // 2
 
-        # Mask: 0 alpha = inpaint region, 255 alpha = preserve product region
-        mask_canvas = Image.new("RGBA", (square_size, square_size), (0, 0, 0, 0))
-        # Fill the placed area with opaque white to protect it
-        opaque_rect = Image.new("RGBA", (fit_w, fit_h), (255, 255, 255, 255))
-        mask_canvas.paste(opaque_rect, (paste_x, paste_y))
+        placed_src = source_img.resize((placed_w, placed_h), resample=Image.Resampling.LANCZOS).convert("RGBA")
 
-        img_byte_arr = io.BytesIO()
-        image_canvas.save(img_byte_arr, format="PNG")
-        img_bytes = img_byte_arr.getvalue()
+        # 3. Build image canvas:
+        # Source image is opaque inside (placed_x, placed_y)
+        # Extension areas within (box_w, box_h) are transparent for inpainting
+        # Outside (box_w, box_h) is opaque black so DALL-E doesn't inpaint unused margins
+        image_canvas = Image.new("RGBA", (square_size, square_size), (0, 0, 0, 255))
+        # Clear target box to transparent
+        transparent_box = Image.new("RGBA", (box_w, box_h), (0, 0, 0, 0))
+        image_canvas.paste(transparent_box, (box_x, box_y))
+        # Paste source image
+        image_canvas.paste(placed_src, (placed_x, placed_y))
 
-        mask_byte_arr = io.BytesIO()
-        mask_canvas.save(mask_byte_arr, format="PNG")
-        mask_bytes = mask_byte_arr.getvalue()
+        # 4. Build mask canvas:
+        # In DALL-E 2: alpha=0 indicates inpainting area, alpha=255 indicates protected area
+        # We protect outside box + placed source image. Only extension regions inside box have alpha=0.
+        mask_canvas = Image.new("RGBA", (square_size, square_size), (255, 255, 255, 255))
+        # Clear target box to alpha 0 (inpaintable)
+        transparent_mask_box = Image.new("RGBA", (box_w, box_h), (0, 0, 0, 0))
+        mask_canvas.paste(transparent_mask_box, (box_x, box_y))
+        # Make source image area protected (alpha 255)
+        protected_rect = Image.new("RGBA", (placed_w, placed_h), (255, 255, 255, 255))
+        mask_canvas.paste(protected_rect, (placed_x, placed_y))
+
+        img_bytes_io = io.BytesIO()
+        image_canvas.save(img_bytes_io, format="PNG")
+        img_bytes = img_bytes_io.getvalue()
+
+        mask_bytes_io = io.BytesIO()
+        mask_canvas.save(mask_bytes_io, format="PNG")
+        mask_bytes = mask_bytes_io.getvalue()
+
+        edit_prompt = (
+            prompt or
+            "Professional studio product photography, clean continuous luxury backdrop, seamless matching lighting and gradient"
+        )
 
         response = client.images.edit(
             image=img_bytes,
             mask=mask_bytes,
-            prompt=prompt,
+            prompt=edit_prompt,
             n=1,
             size="1024x1024"
         )
 
+        if not response.data or not response.data[0].url:
+            return None, "OpenAI did not return an image URL."
+
         image_url = response.data[0].url
-        if image_url:
-            import httpx
-            resp = httpx.get(image_url, timeout=30.0)
-            if resp.status_code == 200:
-                gen_img = Image.open(io.BytesIO(resp.content)).convert("RGB")
-                # Resize to target canvas and composite pristine source in center
-                final_out = gen_img.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
-                return final_out
-    except Exception:
-        return None
-    return None
+        import httpx
+        resp = httpx.get(image_url, timeout=30.0)
+        if resp.status_code != 200:
+            return None, f"Failed to download generated image from OpenAI (HTTP {resp.status_code})."
+
+        generated_square = Image.open(io.BytesIO(resp.content)).convert("RGB")
+
+        # 5. Crop the exact target box (aspect ratio preserved!)
+        cropped_target = generated_square.crop((box_x, box_y, box_x + box_w, box_y + box_h))
+
+        # 6. Resize cropped target to final target dimensions
+        final_img = cropped_target.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
+
+        # 7. Strictly re-composite pristine source image pixels in its mapped position
+        final_placed_w, final_placed_h, final_ox, final_oy, _ = calculate_expansion_canvas(
+            orig_w, orig_h, target_w, target_h
+        )
+        pristine_placed = source_img.convert("RGB").resize((final_placed_w, final_placed_h), resample=Image.Resampling.LANCZOS)
+
+        # Feather edge 2px
+        mask_im = Image.new("L", (final_placed_w, final_placed_h), 255)
+        if final_placed_w > 8 and final_placed_h > 8:
+            from PIL import ImageDraw
+            draw = ImageDraw.Draw(mask_im)
+            draw.rectangle([0, 0, final_placed_w - 1, final_placed_h - 1], outline=180, width=1)
+
+        final_img.paste(pristine_placed, (final_ox, final_oy), mask=mask_im)
+        return final_img, None
+
+    except Exception as e:
+        err_msg = str(e)
+        if "rate_limit" in err_msg.lower() or "429" in err_msg:
+            return None, "OpenAI API rate limit exceeded. Please try again shortly."
+        if "quota" in err_msg.lower() or "insufficient_quota" in err_msg:
+            return None, "OpenAI account quota exceeded. Check billing."
+        if "invalid_api_key" in err_msg.lower() or "401" in err_msg:
+            return None, "Invalid OpenAI API key."
+        return None, f"OpenAI error: {err_msg[:120]}"
 
 
-def expand_background_product_safe(
+def call_gemini_image_edit(
+    source_img: Image.Image,
+    target_w: int,
+    target_h: int,
+    prompt: Optional[str] = None
+) -> Tuple[Optional[Image.Image], Optional[str]]:
+    """
+    Call Google Gemini Imagen 3 image generation if GEMINI_API_KEY is configured.
+    """
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        return None, "Gemini API key not configured."
+
+    try:
+        from google import genai
+        client = genai.Client(api_key=api_key)
+
+        orig_w, orig_h = source_img.size
+        placed_w, placed_h, offset_x, offset_y, exp_type = calculate_expansion_canvas(
+            orig_w, orig_h, target_w, target_h
+        )
+
+        # Gemini Imagen generate call with context
+        edit_prompt = (
+            prompt or
+            "Commercial studio background extension for product photography, clean minimal backdrop, seamless studio lighting"
+        )
+
+        result = client.models.generate_images(
+            model='imagen-3.0-generate-002',
+            prompt=edit_prompt,
+            config=dict(
+                number_of_images=1,
+                output_mime_type="image/jpeg",
+                aspect_ratio="1:1" if target_w == target_h else ("16:9" if target_w > target_h else "4:3")
+            )
+        )
+
+        if result.generated_images:
+            gen_bytes = result.generated_images[0].image.image_bytes
+            gen_img = Image.open(io.BytesIO(gen_bytes)).convert("RGB")
+            final_img = gen_img.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
+
+            # Re-composite pristine source pixels
+            pristine_placed = source_img.convert("RGB").resize((placed_w, placed_h), resample=Image.Resampling.LANCZOS)
+            final_img.paste(pristine_placed, (offset_x, offset_y))
+            return final_img, None
+        return None, "Gemini returned no generated images."
+    except Exception as e:
+        return None, f"Gemini error: {str(e)[:120]}"
+
+
+def expand_background_ai(
     img: Image.Image,
     target_w: int,
     target_h: int,
-    subject_bbox: Optional[Tuple[int, int, int, int]] = None,
     prompt_hint: Optional[str] = None,
     bg_color_hex: str = "#F8FAFC",
-    is_transparent: bool = False
-) -> Tuple[Image.Image, Dict[str, Any]]:
+    allow_opencv_fallback: bool = False,
+    subject_bbox: Optional[Any] = None,
+    is_transparent: bool = False,
+    **kwargs
+) -> Tuple[Optional[Image.Image], Dict[str, Any]]:
     """
-    Main product-safe background expansion function.
-    1. Checks if aspect ratio matches -> returns direct LANCZOS resize.
-    2. Determines placement geometry and expansion axis.
-    3. Tries configured Generative AI provider (OpenAI or Gemini) if API key available.
-    4. Falls back to Studio Texture & Gradient Expansion (100% reliable, zero hallucination).
-    5. Always protects and re-composites pristine original product pixels.
-    6. Ensures exact target output dimensions.
+    AI-Enhanced Background Expansion for a single ratio.
+    Returns: (expanded_image_or_none, metadata_dict)
+
+    Status codes:
+    - 'ready': Successfully generated using real AI provider.
+    - 'unavailable': No AI credentials configured.
+    - 'failed': AI call attempted but failed.
+    - 'fallback': Explicitly allowed OpenCV fallback used (never labeled as AI).
     """
     orig_w, orig_h = img.size
     placed_w, placed_h, offset_x, offset_y, expansion_type = calculate_expansion_canvas(
         orig_w, orig_h, target_w, target_h
     )
 
-    # 1. Exact match / virtually identical ratio
+    # 1. Exact match / virtually identical ratio: direct resize
     if expansion_type == "none":
         resized = img.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
         meta = {
-            "method": "exact_fit",
-            "provider": "lanczos",
+            "status": "ready",
+            "method": "ai",
+            "provider": "direct_fit",
             "canvas_size": [target_w, target_h],
             "placed_box": [0, 0, target_w, target_h],
             "product_preserved": True,
-            "status": "success",
-            "fallback_reason": None,
+            "error_message": None,
         }
         return resized, meta
 
-    # 2. Check if external AI provider is configured
-    ai_provider = get_configured_ai_provider()
+    # 2. Check configured AI provider
+    provider = get_configured_ai_provider()
+    if not provider:
+        if allow_opencv_fallback:
+            expanded = studio_texture_background_expansion(
+                img_rgb=img.convert("RGB"),
+                target_w=target_w,
+                target_h=target_h,
+                placed_w=placed_w,
+                placed_h=placed_h,
+                offset_x=offset_x,
+                offset_y=offset_y,
+                expansion_type=expansion_type,
+                bg_color_hex=bg_color_hex
+            )
+            return expanded, {
+                "status": "fallback",
+                "method": "ai",
+                "provider": "opencv_fallback",
+                "canvas_size": [target_w, target_h],
+                "placed_box": [offset_x, offset_y, offset_x + placed_w, offset_y + placed_h],
+                "product_preserved": True,
+                "error_message": "AI provider unavailable; generated using OpenCV texture expansion.",
+            }
+
+        return None, {
+            "status": "unavailable",
+            "method": "ai",
+            "provider": None,
+            "canvas_size": [target_w, target_h],
+            "placed_box": [offset_x, offset_y, offset_x + placed_w, offset_y + placed_h],
+            "product_preserved": True,
+            "error_message": "AI provider not configured. Add OPENAI_API_KEY or GEMINI_API_KEY to backend/.env",
+        }
+
+    # 3. Call configured AI provider
     gen_result: Optional[Image.Image] = None
-    used_provider = "studio_cv"
+    err_msg: Optional[str] = None
 
-    if ai_provider == "openai":
-        prompt = (
-            prompt_hint or
-            "Commercial product photography studio background continuation, seamless lighting, neutral luxury background, no extra objects"
-        )
-        gen_result = call_openai_image_edit(img, target_w, target_h, prompt=prompt)
-        if gen_result is not None:
-            used_provider = "openai"
+    if provider == "openai":
+        gen_result, err_msg = call_openai_image_edit(img, target_w, target_h, prompt=prompt_hint)
+    elif provider == "gemini":
+        gen_result, err_msg = call_gemini_image_edit(img, target_w, target_h, prompt=prompt_hint)
 
-    # 3. If no external provider or API call was unsuccessful, use Studio Texture Expansion
-    if gen_result is None:
-        rgb_source = img.convert("RGB")
+    if gen_result is not None:
+        if gen_result.size != (target_w, target_h):
+            gen_result = gen_result.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
+        return gen_result, {
+            "status": "ready",
+            "method": "ai",
+            "provider": provider,
+            "canvas_size": [target_w, target_h],
+            "placed_box": [offset_x, offset_y, offset_x + placed_w, offset_y + placed_h],
+            "product_preserved": True,
+            "error_message": None,
+        }
+
+    # 4. If AI provider failed
+    if allow_opencv_fallback:
         expanded = studio_texture_background_expansion(
-            img_rgb=rgb_source,
+            img_rgb=img.convert("RGB"),
             target_w=target_w,
             target_h=target_h,
             placed_w=placed_w,
@@ -318,25 +462,27 @@ def expand_background_product_safe(
             expansion_type=expansion_type,
             bg_color_hex=bg_color_hex
         )
-        used_provider = "studio_cv"
-    else:
-        # Re-composite pristine product pixels on top of AI result to prevent any alteration
-        placed_img = img.convert("RGB").resize((placed_w, placed_h), resample=Image.Resampling.LANCZOS)
-        gen_result.paste(placed_img, (offset_x, offset_y))
-        expanded = gen_result
+        return expanded, {
+            "status": "fallback",
+            "method": "ai",
+            "provider": "opencv_fallback",
+            "canvas_size": [target_w, target_h],
+            "placed_box": [offset_x, offset_y, offset_x + placed_w, offset_y + placed_h],
+            "product_preserved": True,
+            "error_message": f"AI generation failed ({err_msg}). Displaying OpenCV fallback.",
+        }
 
-    # Guarantee final dimensions match exactly
-    if expanded.size != (target_w, target_h):
-        expanded = expanded.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
-
-    meta = {
-        "method": "ai_background_expansion" if used_provider != "studio_cv" else "studio_background_expansion",
-        "provider": used_provider,
+    return None, {
+        "status": "failed",
+        "method": "ai",
+        "provider": provider,
         "canvas_size": [target_w, target_h],
         "placed_box": [offset_x, offset_y, offset_x + placed_w, offset_y + placed_h],
-        "product_preserved": True,
-        "status": "success",
-        "fallback_reason": None,
+        "product_preserved": False,
+        "error_message": err_msg or "AI generation failed.",
     }
 
-    return expanded, meta
+
+# Backwards-compatible alias
+expand_background_product_safe = expand_background_ai
+

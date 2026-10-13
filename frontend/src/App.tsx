@@ -8,9 +8,10 @@ import { DownloadAll } from './components/DownloadAll';
 import { CropEditor } from './components/CropEditor';
 import { OriginalCropEditor } from './components/OriginalCropEditor';
 import { PreviewModal } from './components/PreviewModal';
-import type { UploadResponse, RatioOutput, ConvertSettings } from './services/api';
+import { ComparisonResults } from './components/ComparisonResults';
+import type { UploadResponse, RatioOutput, ConvertSettings, ComparisonRow } from './services/api';
 import { api } from './services/api';
-import { AlertCircle, Crop, RotateCcw, Home, Check, Loader2 } from 'lucide-react';
+import { AlertCircle, Crop, RotateCcw, Home, Check, Loader2, SlidersHorizontal } from 'lucide-react';
 
 export type ProcessingMode = 'direct_stretch' | 'smart_crop' | 'safe_fit' | 'manual_crop';
 
@@ -29,6 +30,10 @@ export const App: React.FC = () => {
   const [isEditingCrop, setIsEditingCrop] = useState<boolean>(false);
   // Generation revision per image (used so ZIP requests can never mix old and new outputs)
   const [revisionMap, setRevisionMap] = useState<Record<string, number>>({});
+  // Comparison results map: imageId -> ComparisonRow[]
+  const [comparisonRowsMap, setComparisonRowsMap] = useState<Record<string, ComparisonRow[]>>({});
+  const [aiInfoMap, setAiInfoMap] = useState<Record<string, { status: string; provider?: string; message?: string }>>({});
+  const [preferencesMap, setPreferencesMap] = useState<Record<string, Record<string, 'standard' | 'ai'>>>({});
 
   const [settings, setSettings] = useState<ConvertSettings>({
     image_id: '',
@@ -53,6 +58,8 @@ export const App: React.FC = () => {
     const idxB = ratioOrder.indexOf(b.safe_key);
     return (idxA !== -1 ? idxA : 99) - (idxB !== -1 ? idxB : 99);
   });
+  const currentComparisonRows = activeImage ? comparisonRowsMap[activeImage.image_id] || [] : [];
+  const currentAiInfo = activeImage ? aiInfoMap[activeImage.image_id] : undefined;
 
   const handleUploadSuccess = (uploadedList: UploadResponse[]) => {
     setImages((prev) => {
@@ -126,6 +133,10 @@ export const App: React.FC = () => {
     setImages([]);
     setActiveImageId('');
     setOutputsByModeMap({});
+    setComparisonRowsMap({});
+    setAiInfoMap({});
+    setPreferencesMap({});
+    setRevisionMap({});
     setErrorMessage(null);
     setEditingItem(null);
     setPreviewModalItem(null);
@@ -211,8 +222,13 @@ export const App: React.FC = () => {
       prev.map((img) => (img.image_id === updatedData.image_id ? updatedData : img))
     );
 
-    // 2. Drop outputs from any previous generation so old results/selections are never shown
+    // 2. Drop outputs and comparison rows from any previous generation so old results/selections are never shown
     setOutputsByModeMap((prev) => ({ ...prev, [updatedData.image_id]: {} }));
+    setComparisonRowsMap((prev) => {
+      const copy = { ...prev };
+      delete copy[updatedData.image_id];
+      return copy;
+    });
     setRevisionMap((prev) => {
       const copy = { ...prev };
       delete copy[updatedData.image_id];
@@ -223,6 +239,72 @@ export const App: React.FC = () => {
     setIsEditingCrop(false);
     setIsEditingOriginal(false);
     setErrorMessage(null);
+  };
+
+  const handleGenerateComparison = async () => {
+    if (!activeImage) return;
+
+    setIsGenerating(true);
+    setErrorMessage(null);
+
+    try {
+      const response = await api.convertComparison({
+        image_id: activeImage.image_id,
+        export_format: settings.export_format,
+        quality: settings.quality,
+        bg_color_hex: settings.bg_color_hex,
+        is_transparent: settings.is_transparent,
+        sharpen: settings.sharpen,
+        denoise: settings.denoise,
+      });
+
+      setComparisonRowsMap((prev) => ({
+        ...prev,
+        [activeImage.image_id]: response.rows,
+      }));
+
+      setAiInfoMap((prev) => ({
+        ...prev,
+        [activeImage.image_id]: {
+          status: response.ai_status,
+          provider: response.ai_provider,
+          message: response.ai_message,
+        },
+      }));
+
+      // Initialize preferences
+      setPreferencesMap((prev) => {
+        const existing = prev[activeImage.image_id] || {};
+        const updated = { ...existing };
+        response.rows.forEach((r) => {
+          if (!updated[r.safe_key]) {
+            updated[r.safe_key] = r.preferred_method || 'standard';
+          }
+        });
+        return { ...prev, [activeImage.image_id]: updated };
+      });
+
+      if (response.revision !== undefined) {
+        setRevisionMap((prev) => ({ ...prev, [activeImage.image_id]: response.revision as number }));
+      }
+    } catch (err: any) {
+      setErrorMessage(
+        err.response?.data?.detail || err.message || 'Failed to generate Standard vs AI comparison.'
+      );
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const handlePreferenceChange = (safeKey: string, method: 'standard' | 'ai') => {
+    if (!activeImage) return;
+    setPreferencesMap((prev) => ({
+      ...prev,
+      [activeImage.image_id]: {
+        ...(prev[activeImage.image_id] || {}),
+        [safeKey]: method,
+      },
+    }));
   };
 
   const handleResize = async () => {
@@ -402,7 +484,7 @@ export const App: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Dimensions Bar & Resize Action */}
+                  {/* Dimensions Bar & Generate Comparison Action */}
                   <div className="px-5 py-3.5 bg-violet-50/70 border-t border-violet-100 flex flex-wrap items-center justify-between gap-3 text-xs">
                     <div className="flex items-center gap-2">
                       <span className="font-semibold text-slate-700">Active Working Dimensions:</span>
@@ -411,7 +493,7 @@ export const App: React.FC = () => {
                       </span>
                       <span className="text-slate-400">•</span>
                       <span className="text-slate-600">
-                        Direct Stretch will resize this cropped image into all 5 aspect ratios.
+                        Compare Standard Resize (Direct Stretch) & AI Enhanced Resize (Outpainted Background).
                       </span>
                     </div>
                     <div className="flex items-center gap-3">
@@ -426,15 +508,27 @@ export const App: React.FC = () => {
                         type="button"
                         onClick={handleResize}
                         disabled={isGenerating}
-                        className="py-2 px-5 rounded-xl bg-violet-600 hover:bg-violet-700 active:scale-[0.99] text-xs font-semibold text-white shadow-sm flex items-center gap-2 transition-all cursor-pointer disabled:opacity-50"
+                        className="py-2.5 px-3.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50 border border-slate-200"
+                        title="Generate only standard direct stretch outputs without AI"
+                      >
+                        Standard Only
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleGenerateComparison}
+                        disabled={isGenerating}
+                        className="py-2.5 px-5 rounded-xl bg-violet-600 hover:bg-violet-700 active:scale-[0.99] text-xs font-semibold text-white shadow-sm flex items-center gap-2 transition-all cursor-pointer disabled:opacity-50"
                       >
                         {isGenerating ? (
                           <>
                             <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            <span>Resizing into 5 Ratios...</span>
+                            <span>Generating Comparison...</span>
                           </>
                         ) : (
-                          <span>Resize</span>
+                          <>
+                            <SlidersHorizontal className="w-3.5 h-3.5" />
+                            <span>Generate Comparison</span>
+                          </>
                         )}
                       </button>
                     </div>
@@ -449,81 +543,88 @@ export const App: React.FC = () => {
               />
             </div>
 
-            {/* Lower Section: Horizontal Generated 5 Ratio Outputs & Download Selection */}
+            {/* Lower Section: Comparison Outputs OR Single Outputs & Download Selection */}
             <div className="space-y-6 pt-4">
-              <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-6 shadow-xs">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-100 gap-2 mb-6">
+              {isGenerating ? (
+                <div className="bg-white border border-slate-200 rounded-2xl p-8 sm:p-12 shadow-xs text-center space-y-3">
+                  <div className="w-12 h-12 mx-auto rounded-full bg-violet-100 flex items-center justify-center text-violet-600 animate-spin">
+                    <div className="w-6 h-6 border-2 border-violet-600 border-t-transparent rounded-full" />
+                  </div>
+                  <p className="text-base font-semibold text-slate-800">
+                    Generating Standard vs AI Comparison...
+                  </p>
+                  <p className="text-xs text-slate-500 max-w-md mx-auto">
+                    Processing 5 aspect ratios with Direct Stretch (Standard) and AI background expansion.
+                  </p>
+                </div>
+              ) : currentComparisonRows.length > 0 ? (
+                <div className="space-y-8">
+                  <ComparisonResults
+                    rows={currentComparisonRows}
+                    preferences={preferencesMap[activeImage.image_id] || {}}
+                    onPreferenceChange={handlePreferenceChange}
+                    imageId={activeImage.image_id}
+                    aiStatus={currentAiInfo?.status}
+                    aiProvider={currentAiInfo?.provider}
+                    aiMessage={currentAiInfo?.message}
+                    onOpenPreviewModal={(it: RatioOutput) => setPreviewModalItem(it)}
+                  />
+
+                  {activeImage && (
+                    <DownloadAll
+                      key={`${activeImage.image_id}-${revisionMap[activeImage.image_id] ?? 0}`}
+                      imageId={activeImage.image_id}
+                      outputs={[]}
+                      comparisonRows={currentComparisonRows}
+                      preferences={preferencesMap[activeImage.image_id] || {}}
+                      revision={revisionMap[activeImage.image_id]}
+                    />
+                  )}
+                </div>
+              ) : currentOutputs.length > 0 ? (
+                /* Direct Stretch single mode fallback */
+                <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-6 shadow-xs space-y-8">
+                  <div className="w-full">
+                    <div className="overflow-x-auto pb-4 pt-1 -mx-2 px-2">
+                      <div className="grid grid-flow-col auto-cols-[280px] sm:auto-cols-[300px] xl:auto-cols-[minmax(0,1fr)] xl:grid-cols-5 gap-4 min-w-max xl:min-w-0">
+                        {currentOutputs.map((item) => (
+                          <div key={item.safe_key} className="w-full flex">
+                            <RatioCard
+                              item={item}
+                              imageId={activeImage.image_id}
+                              onOpenPreviewModal={(it: RatioOutput) => setPreviewModalItem(it)}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {activeImage && (
+                    <DownloadAll
+                      key={`${activeImage.image_id}-${revisionMap[activeImage.image_id] ?? 0}`}
+                      imageId={activeImage.image_id}
+                      outputs={currentOutputs}
+                      revision={revisionMap[activeImage.image_id]}
+                    />
+                  )}
+                </div>
+              ) : (
+                /* Empty state before generation */
+                <div className="bg-white border border-slate-200 rounded-2xl p-12 shadow-xs text-center space-y-3">
+                  <div className="w-14 h-14 mx-auto rounded-2xl bg-violet-50 text-violet-500 flex items-center justify-center border border-violet-100">
+                    <div className="w-7 h-7 border-2 border-dashed border-violet-400 rounded-lg" />
+                  </div>
                   <div>
-                    <h3 className="font-semibold text-slate-900 text-base">
-                      Generated Ratio Outputs
-                    </h3>
-                    <p className="text-xs text-slate-500">
-                      {currentOutputs.length > 0
-                        ? 'All 5 commercial aspect ratios displayed horizontally side-by-side'
-                        : 'Click Resize to generate all 5 ratios using Direct Stretch'}
+                    <h4 className="text-base font-semibold text-slate-800">
+                      Your comparison results will appear here
+                    </h4>
+                    <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
+                      Fine-tune your crop area above, click <span className="font-semibold text-violet-700">Done</span>, then click <span className="font-semibold text-violet-700">Generate Comparison</span> to compare Standard vs AI Enhanced side-by-side.
                     </p>
                   </div>
                 </div>
-
-                {/* Empty state before Resize or when generating */}
-                {isGenerating ? (
-                  <div className="py-20 text-center space-y-3 bg-slate-50/50 rounded-xl border border-dashed border-slate-200">
-                    <div className="w-12 h-12 mx-auto rounded-full bg-violet-100 flex items-center justify-center text-violet-600 animate-spin">
-                      <div className="w-6 h-6 border-2 border-violet-600 border-t-transparent rounded-full" />
-                    </div>
-                    <p className="text-base font-semibold text-slate-800">
-                      Generating 5 Ratios...
-                    </p>
-                    <p className="text-xs text-slate-500 max-w-md mx-auto">
-                      Applying Direct Stretch to generate Large, Medium, and Small variants.
-                    </p>
-                  </div>
-                ) : currentOutputs.length === 0 ? (
-                  <div className="py-20 text-center space-y-3 bg-slate-50/50 rounded-xl border border-dashed border-slate-200">
-                    <div className="w-14 h-14 mx-auto rounded-2xl bg-violet-50 text-violet-500 flex items-center justify-center border border-violet-100">
-                      <div className="w-7 h-7 border-2 border-dashed border-violet-400 rounded-lg" />
-                    </div>
-                    <div>
-                      <h4 className="text-base font-semibold text-slate-800">
-                        Your five images will appear here
-                      </h4>
-                      <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
-                        Select your crop area above, click <span className="font-semibold text-violet-700">Done</span>, then click <span className="font-semibold text-violet-700">Resize</span> to generate all 5 aspect ratios.
-                      </p>
-                    </div>
-                  </div>
-                ) : (
-                  /* Horizontal Layout: 5 Ratio Cards Side-by-Side on top, then Choose Images to Download below */
-                  <div className="space-y-8">
-                    {/* Five Horizontal Ratio Cards (side-by-side left to right, horizontal scroll on small screens) */}
-                    <div className="w-full">
-                      <div className="overflow-x-auto pb-4 pt-1 -mx-2 px-2">
-                        <div className="grid grid-flow-col auto-cols-[280px] sm:auto-cols-[300px] xl:auto-cols-[minmax(0,1fr)] xl:grid-cols-5 gap-4 min-w-max xl:min-w-0">
-                          {currentOutputs.map((item) => (
-                            <div key={item.safe_key} className="w-full flex">
-                              <RatioCard
-                                item={item}
-                                imageId={activeImage.image_id}
-                                onOpenPreviewModal={(it: RatioOutput) => setPreviewModalItem(it)}
-                              />
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Choose Images to Download + Download Selected ZIP (placed BELOW horizontal cards) */}
-                    {activeImage && (
-                      <DownloadAll
-                        key={`${activeImage.image_id}-${revisionMap[activeImage.image_id] ?? 0}`}
-                        imageId={activeImage.image_id}
-                        outputs={currentOutputs}
-                        revision={revisionMap[activeImage.image_id]}
-                      />
-                    )}
-                  </div>
-                )}
-              </div>
+              )}
             </div>
           </div>
         )}

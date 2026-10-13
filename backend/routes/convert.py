@@ -17,6 +17,7 @@ from services.validator import (
 )
 from services.image_processor import (
     generate_all_ratios,
+    generate_comparison_pipeline,
     regenerate_single_ratio,
     delete_session,
     get_image_session_dirs,
@@ -31,13 +32,15 @@ router = APIRouter(prefix="/api", tags=["convert"])
 
 class ConvertRequest(BaseModel):
     image_id: str
-    mode: str = Field(default="direct_stretch", description="direct_stretch, smart_crop, ai_expand, safe_fit, or manual_crop")
+    mode: str = Field(default="direct_stretch", description="direct_stretch, comparison, smart_crop, ai_expand, safe_fit, or manual_crop")
     export_format: str = Field(default="jpeg", description="jpeg, png, or webp")
     quality: int = Field(default=90, ge=1, le=100)
     bg_color_hex: str = Field(default="#F8FAFC")
     is_transparent: bool = Field(default=False)
     sharpen: bool = Field(default=False)
     denoise: bool = Field(default=False)
+    allow_opencv_fallback: bool = Field(default=False)
+    prompt_hint: Optional[str] = None
     custom_crops: Optional[Dict[str, List[int]]] = None
 
 
@@ -51,6 +54,8 @@ class FitInfoItem(BaseModel):
 
 class VariantItem(BaseModel):
     selection_id: str
+    legacy_selection_id: Optional[str] = None
+    method: Optional[str] = "standard"
     ratio_safe_key: str
     ratio_name: str
     size_key: str
@@ -59,12 +64,14 @@ class VariantItem(BaseModel):
     height: int
     file_name: str
     file_size: int
+    status: Optional[str] = "ready"
 
 
 class OutputRatioItem(BaseModel):
     ratio_key: str
     safe_key: str
     legacy_key: Optional[str] = None
+    method: Optional[str] = "standard"
     name: str
     width: int
     height: int
@@ -79,10 +86,49 @@ class OutputRatioItem(BaseModel):
     source_height: int
     crop_box: List[int]
     mode: str
+    status: Optional[str] = "ready"
+    provider: Optional[str] = None
+    error_message: Optional[str] = None
     edges_trimmed: Optional[bool] = False
     fit_info: Optional[FitInfoItem] = None
     fallback_reason: Optional[str] = None
     variants: List[VariantItem] = []
+
+
+class ComparisonRatioRow(BaseModel):
+    safe_key: str
+    ratio_key: str
+    name: str
+    width: int
+    height: int
+    orientation: str
+    standard: OutputRatioItem
+    ai: OutputRatioItem
+    preferred_method: str = "standard"
+
+
+class ConvertComparisonRequest(BaseModel):
+    image_id: str
+    export_format: str = Field(default="jpeg")
+    quality: int = Field(default=90, ge=1, le=100)
+    bg_color_hex: str = Field(default="#F8FAFC")
+    is_transparent: bool = Field(default=False)
+    sharpen: bool = Field(default=False)
+    denoise: bool = Field(default=False)
+    allow_opencv_fallback: bool = Field(default=False)
+    prompt_hint: Optional[str] = None
+
+
+class ConvertComparisonResponse(BaseModel):
+    image_id: str
+    original_filename: str
+    export_format: str
+    revision: int = 0
+    ai_status: str
+    ai_provider: Optional[str] = None
+    ai_message: Optional[str] = None
+    rows: List[ComparisonRatioRow]
+    outputs: List[OutputRatioItem] = []
 
 
 class ConvertResponse(BaseModel):
@@ -92,6 +138,8 @@ class ConvertResponse(BaseModel):
     mode: str
     revision: int = 0
     outputs: List[OutputRatioItem]
+    rows: Optional[List[ComparisonRatioRow]] = None
+    ai_status: Optional[str] = None
 
 
 class AdjustCropRequest(BaseModel):
@@ -103,19 +151,45 @@ class AdjustCropRequest(BaseModel):
 @router.post("/convert", response_model=ConvertResponse)
 async def convert_image(payload: ConvertRequest):
     """
-    Generate all 5 predefined aspect ratios for the uploaded image.
-    Option A: Smart Crop (Professional full-frame crop, subject-centered, no blurred backgrounds).
-    Option B: Safe Fit (Complete image preserved on clean solid studio background).
-    Option C: AI Background Expansion (Product-safe outpainting, zero pixel alteration).
+    Generate outputs for the uploaded image.
+    Supports mode='direct_stretch', 'comparison', etc.
     """
     validate_session_id(payload.image_id)
 
-    valid_modes = ["direct_stretch", "stretch", "smart_crop", "ai_expand", "safe_fit", "manual_crop", "fit_contain", "smart_fit"]
+    valid_modes = ["direct_stretch", "comparison", "both", "stretch", "smart_crop", "ai_expand", "safe_fit", "manual_crop", "fit_contain", "smart_fit"]
     mode = payload.mode if payload.mode in valid_modes else "direct_stretch"
 
     valid_formats = ["jpeg", "png", "webp"]
     export_format = payload.export_format.lower() if payload.export_format.lower() in valid_formats else "jpeg"
     bg_hex = validate_hex_color(payload.bg_color_hex) if not payload.is_transparent else payload.bg_color_hex
+
+    if mode in ["comparison", "both"]:
+        try:
+            results = generate_comparison_pipeline(
+                image_id=payload.image_id,
+                export_format=export_format,
+                quality=payload.quality,
+                bg_color_hex=bg_hex,
+                is_transparent=payload.is_transparent,
+                sharpen=payload.sharpen,
+                denoise=payload.denoise,
+                allow_opencv_fallback=payload.allow_opencv_fallback,
+                prompt_hint=payload.prompt_hint,
+            )
+            return ConvertResponse(
+                image_id=results["image_id"],
+                original_filename=results["original_filename"],
+                export_format=results["export_format"],
+                mode="comparison",
+                revision=results.get("revision", 0),
+                outputs=results["standard"]["outputs"],
+                rows=results["rows"],
+                ai_status=results["ai"]["status"],
+            )
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="Image session not found or expired.")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Comparison generation failed: {str(e)[:100]}")
 
     custom_crops_dict = {}
     if payload.custom_crops:
@@ -147,6 +221,49 @@ async def convert_image(payload: ConvertRequest):
         mode=results["mode"],
         revision=results.get("revision", 0),
         outputs=results["outputs"],
+    )
+
+
+@router.post("/convert-comparison", response_model=ConvertComparisonResponse)
+async def convert_comparison_endpoint(payload: ConvertComparisonRequest):
+    """
+    Generate both Standard Resize (Direct Stretch) and AI Enhanced Resize
+    from the approved cropped master image.
+    Generates up to 30 outputs (15 standard + 15 AI) and returns 5 comparison rows.
+    """
+    validate_session_id(payload.image_id)
+    bg_hex = validate_hex_color(payload.bg_color_hex)
+    export_format = payload.export_format.lower()
+    if export_format not in ["jpeg", "png", "webp"]:
+        export_format = "jpeg"
+
+    try:
+        results = generate_comparison_pipeline(
+            image_id=payload.image_id,
+            export_format=export_format,
+            quality=payload.quality,
+            bg_color_hex=bg_hex,
+            is_transparent=payload.is_transparent,
+            sharpen=payload.sharpen,
+            denoise=payload.denoise,
+            allow_opencv_fallback=payload.allow_opencv_fallback,
+            prompt_hint=payload.prompt_hint,
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Image session not found or expired.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Comparison generation failed: {str(e)[:100]}")
+
+    return ConvertComparisonResponse(
+        image_id=results["image_id"],
+        original_filename=results["original_filename"],
+        export_format=results["export_format"],
+        revision=results.get("revision", 0),
+        ai_status=results["ai"]["status"],
+        ai_provider=results["ai"].get("provider"),
+        ai_message=results["ai"].get("error_message"),
+        rows=results["rows"],
+        outputs=results["standard"]["outputs"],
     )
 
 

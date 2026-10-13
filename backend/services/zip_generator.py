@@ -29,7 +29,8 @@ def create_selected_zip_archive(
     if not selection_ids:
         raise SelectionError("No images selected.")
 
-    valid_ids = set(all_selection_ids())
+    from services.crop_engine import all_comparison_selection_ids
+    valid_ids = set(all_selection_ids()) | set(all_comparison_selection_ids())
     seen = set()
     for sid in selection_ids:
         if not isinstance(sid, str) or sid not in valid_ids:
@@ -52,14 +53,35 @@ def create_selected_zip_archive(
             "Please refresh and select again."
         )
 
-    by_id = {v["selection_id"]: v for v in metadata.get("variants", [])}
+    by_id = {}
+    for v in metadata.get("variants", []):
+        sid = v.get("selection_id", "")
+        by_id[sid] = v
+        if "legacy_selection_id" in v:
+            by_id[v["legacy_selection_id"]] = v
+        if sid.startswith("standard:"):
+            bare_id = sid.split("standard:", 1)[1]
+            if bare_id not in by_id:
+                by_id[bare_id] = v
+        elif not sid.startswith("ai:"):
+            std_id = f"standard:{sid}"
+            if std_id not in by_id:
+                by_id[std_id] = v
+
     gen_root = os.path.realpath(gen_session_dir)
 
     resolved = []
     for sid in selection_ids:
         record = by_id.get(sid)
+        if not record and not sid.startswith("standard:") and not sid.startswith("ai:"):
+            record = by_id.get(f"standard:{sid}")
         if not record:
             raise MissingOutputError(f"Output {sid} has not been generated.")
+        
+        # Ensure only successfully generated images enter the ZIP
+        if record.get("status") in ["failed", "unavailable"]:
+            raise SelectionError(f"Selected image {sid} cannot be downloaded because generation status is {record.get('status')}.")
+
         path = os.path.realpath(record.get("file_path", ""))
         if os.path.commonpath([gen_root, path]) != gen_root or not os.path.isfile(path):
             raise MissingOutputError(f"Generated file for {sid} is missing.")

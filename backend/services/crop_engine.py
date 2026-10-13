@@ -101,8 +101,18 @@ SIZE_PRESETS: Dict[str, Dict[str, Tuple[int, int]]] = {
 
 
 def all_selection_ids() -> List[str]:
-    """All 15 valid '<ratio_safe_key>:<size_key>' selection identifiers."""
+    """All 15 standard selection identifiers."""
     return [f"{cfg['safe_key']}:{s}" for cfg in RATIO_CONFIGS.values() for s in SIZE_KEYS]
+
+
+def all_comparison_selection_ids() -> List[str]:
+    """All 30 comparison selection identifiers (15 standard + 15 ai)."""
+    ids = []
+    for m in ["standard", "ai"]:
+        for cfg in RATIO_CONFIGS.values():
+            for s in SIZE_KEYS:
+                ids.append(f"{m}:{cfg['safe_key']}:{s}")
+    return ids
 
 
 def compute_spectral_residual_saliency(img_cv: np.ndarray) -> np.ndarray:
@@ -561,15 +571,26 @@ def process_image_for_ratio(
 
     # 3. AI Background Expansion Mode
     if mode in ["ai_expand", "ai_outpaint"]:
-        from services.ai_background_expander import expand_background_product_safe
+        from services.ai_background_expander import (
+            expand_background_product_safe,
+            studio_texture_background_expansion,
+            calculate_expansion_canvas
+        )
         canvas, exp_meta = expand_background_product_safe(
             img=img,
             target_w=target_w,
             target_h=target_h,
             subject_bbox=subject_bbox,
             bg_color_hex=bg_color_hex,
-            is_transparent=is_transparent
+            is_transparent=is_transparent,
+            allow_opencv_fallback=True
         )
+        if canvas is None:
+            pw, ph, ox, oy, ext_type = calculate_expansion_canvas(orig_w, orig_h, target_w, target_h)
+            canvas = studio_texture_background_expansion(
+                img.convert("RGB"), target_w, target_h, pw, ph, ox, oy, ext_type, bg_color_hex
+            )
+            exp_meta = {"placed_box": [ox, oy, ox + pw, oy + ph]}
         placed_box = exp_meta.get("placed_box", [0, 0, target_w, target_h])
         fit_info = {
             "has_subject_box": True,
