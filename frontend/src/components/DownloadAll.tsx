@@ -30,6 +30,9 @@ export const DownloadAll: React.FC<DownloadAllProps> = ({
 
   const isComparison = Boolean(comparisonRows && comparisonRows.length > 0);
 
+  const prevPrefsRef = React.useRef<string>('');
+  const prevRevRef = React.useRef<number | undefined>(undefined);
+
   // Collect all outputs to inspect (either from comparisonRows or from flat outputs)
   const allOutputs = useMemo(() => {
     if (isComparison && comparisonRows) {
@@ -81,6 +84,43 @@ export const DownloadAll: React.FC<DownloadAllProps> = ({
     }
     return ids;
   }, [isComparison, available]);
+
+  // Automatically select the 15 preferred items by default, and update when preference toggles change
+  React.useEffect(() => {
+    if (available.size === 0) return;
+    const prefsKey = JSON.stringify(preferences);
+    if (prefsKey === prevPrefsRef.current && revision === prevRevRef.current) {
+      return;
+    }
+    prevPrefsRef.current = prefsKey;
+    prevRevRef.current = revision;
+
+    const next = new Set<string>();
+    if (isComparison) {
+      RATIO_SIZE_TABLE.forEach((r) => {
+        const pref = preferences[r.safe_key] || 'standard';
+        SIZE_KEYS.forEach((s) => {
+          const sid = `${pref}:${r.safe_key}:${s}`;
+          if (available.has(sid)) {
+            next.add(sid);
+          } else {
+            const fallbackSid = `standard:${r.safe_key}:${s}`;
+            if (available.has(fallbackSid)) next.add(fallbackSid);
+          }
+        });
+      });
+    } else {
+      RATIO_SIZE_TABLE.forEach((r) => {
+        SIZE_KEYS.forEach((s) => {
+          const sid = `${r.safe_key}:${s}`;
+          const stdId = `standard:${r.safe_key}:${s}`;
+          if (available.has(sid)) next.add(sid);
+          else if (available.has(stdId)) next.add(stdId);
+        });
+      });
+    }
+    setSelected(next);
+  }, [available, isComparison, preferences, revision]);
 
   const toggle = (id: string) => {
     setSelected((prev) => {
