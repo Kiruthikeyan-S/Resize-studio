@@ -382,7 +382,18 @@ def call_groq_vision_guided_expansion(
 
     try:
         from groq import Groq
-        client = Groq(api_key=api_key, timeout=30.0)
+        import httpx
+        try:
+            http_client = httpx.Client(timeout=25.0)
+        except Exception:
+            http_client = httpx.Client(verify=False, timeout=25.0)
+
+        # Allow SSL fallback if Windows certificates are missing
+        try:
+            client = Groq(api_key=api_key, http_client=http_client)
+        except Exception:
+            http_client = httpx.Client(verify=False, timeout=25.0)
+            client = Groq(api_key=api_key, http_client=http_client)
 
         rgb_img = source_img.convert("RGB")
         w, h = rgb_img.size
@@ -403,6 +414,7 @@ def call_groq_vision_guided_expansion(
             )
             bg_hex = "#F8FAFC"
             try:
+                # 1. Try vision model first
                 chat_res = client.chat.completions.create(
                     model="llama-3.2-11b-vision-preview",
                     messages=[
@@ -425,7 +437,40 @@ def call_groq_vision_guided_expansion(
                     bg_hex = extracted_hex
                     _GROQ_BG_HEX_CACHE[cache_key] = bg_hex
             except Exception:
-                pass
+                # 2. If vision model is not supported/accessible on this account, sample perimeter pixels and infer via Groq LLM
+                try:
+                    np_img = np.array(rgb_img)
+                    edge_samples = np.vstack([
+                        np_img[0, :, :],
+                        np_img[-1, :, :],
+                        np_img[:, 0, :],
+                        np_img[:, -1, :]
+                    ])
+                    mean_rgb = np.mean(edge_samples, axis=0).astype(int)
+                    fallback_client = Groq(api_key=api_key, http_client=httpx.Client(verify=False, timeout=20.0))
+                    chat_res = fallback_client.chat.completions.create(
+                        model="openai/gpt-oss-20b",
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": "You are a studio color analyst. Return ONLY a JSON object: {\"background_hex\": \"#RRGGBB\"}"
+                            },
+                            {
+                                "role": "user",
+                                "content": f"Perimeter mean RGB is ({mean_rgb[0]}, {mean_rgb[1]}, {mean_rgb[2]}). Return the exact matching studio hex code in JSON."
+                            }
+                        ],
+                        temperature=0.1,
+                        response_format={"type": "json_object"}
+                    )
+                    raw_content = chat_res.choices[0].message.content or "{}"
+                    parsed = json.loads(raw_content)
+                    extracted_hex = parsed.get("background_hex")
+                    if extracted_hex and extracted_hex.startswith("#") and len(extracted_hex) == 7:
+                        bg_hex = extracted_hex
+                        _GROQ_BG_HEX_CACHE[cache_key] = bg_hex
+                except Exception:
+                    pass
 
         pw, ph, ox, oy, ext_type = calculate_expansion_canvas(w, h, target_w, target_h)
         expanded = studio_texture_background_expansion(
