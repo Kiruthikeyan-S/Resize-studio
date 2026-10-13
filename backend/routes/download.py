@@ -24,7 +24,8 @@ router = APIRouter(prefix="/api", tags=["download"])
 async def get_preview_thumbnail(
     image_id: str,
     ratio: str,
-    mode: Optional[str] = Query(default=None, description="smart_crop or safe_fit"),
+    mode: Optional[str] = Query(default=None, description="smart_crop, safe_fit, or direct_stretch"),
+    size: Optional[str] = Query(default=None, description="Variant size: large, medium, or small"),
     v: Optional[int] = Query(default=None, description="Revision version tag")
 ):
     """
@@ -44,7 +45,16 @@ async def get_preview_thumbnail(
 
     headers = {"Cache-Control": "public, max-age=31536000, immutable"} if v is not None else {"Cache-Control": "no-cache"}
 
-    # 1. Try mode-specific webp thumbnail first
+    # 1. If size variant is requested, return that variant file
+    if size:
+        sz = size.lower()
+        for k in keys_to_check:
+            for ext, m_type in [("jpg", "image/jpeg"), ("jpeg", "image/jpeg"), ("png", "image/png"), ("webp", "image/webp")]:
+                variant_path = os.path.join(gen_session_dir, f"image_{k}_{sz}.{ext}")
+                if os.path.exists(variant_path):
+                    return FileResponse(variant_path, media_type=m_type, headers=headers)
+
+    # 2. Try mode-specific webp thumbnail first
     if mode:
         for k in keys_to_check:
             thumb_path = os.path.join(gen_session_dir, f"thumb_{k}_{mode}.webp")
@@ -56,13 +66,13 @@ async def get_preview_thumbnail(
                 if os.path.exists(full_path):
                     return FileResponse(full_path, media_type=m_type, headers=headers)
 
-    # 2. Try general webp thumbnails
+    # 3. Try general webp thumbnails
     for k in keys_to_check:
         thumb_path = os.path.join(gen_session_dir, f"thumb_{k}.webp")
         if os.path.exists(thumb_path):
             return FileResponse(thumb_path, media_type="image/webp", headers=headers)
 
-    # 3. Try general full images
+    # 4. Try general full images
     for k in keys_to_check:
         for ext, m_type in [("jpg", "image/jpeg"), ("jpeg", "image/jpeg"), ("png", "image/png"), ("webp", "image/webp")]:
             full_path = os.path.join(gen_session_dir, f"image_{k}.{ext}")
@@ -77,6 +87,7 @@ async def get_preview_full_resolution(
     image_id: str,
     ratio: str,
     mode: Optional[str] = Query(default=None),
+    size: Optional[str] = Query(default=None, description="Variant size: large, medium, or small"),
     v: Optional[int] = Query(default=None)
 ):
     """
@@ -94,6 +105,15 @@ async def get_preview_full_resolution(
         raise HTTPException(status_code=404, detail="Session generated files not found.")
 
     headers = {"Cache-Control": "public, max-age=31536000, immutable"} if v is not None else {"Cache-Control": "no-cache"}
+
+    # 1. If size variant is requested, return that variant file
+    if size:
+        sz = size.lower()
+        for k in keys_to_check:
+            for ext, m_type in [("jpg", "image/jpeg"), ("jpeg", "image/jpeg"), ("png", "image/png"), ("webp", "image/webp")]:
+                variant_path = os.path.join(gen_session_dir, f"image_{k}_{sz}.{ext}")
+                if os.path.exists(variant_path):
+                    return FileResponse(variant_path, media_type=m_type, headers=headers)
 
     if mode:
         for k in keys_to_check:

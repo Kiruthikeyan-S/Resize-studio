@@ -503,10 +503,19 @@ def process_safe_fit(
     return canvas, (0, 0, orig_w, orig_h)
 
 
+def direct_stretch(image: Image.Image, width: int, height: int) -> Image.Image:
+    """
+    Direct stretch resize using Pillow LANCZOS.
+    Preserves 100% of the input image pixels, filling the entire target canvas.
+    Never crops, pads, or uses AI.
+    """
+    return image.resize((width, height), resample=Image.Resampling.LANCZOS)
+
+
 def process_image_for_ratio(
     img: Image.Image,
     target_config: Dict[str, Any],
-    mode: str = "smart_crop",
+    mode: str = "direct_stretch",
     bg_color_hex: str = "#F8FAFC",
     is_transparent: bool = False,
     manual_crop: Optional[Tuple[int, int, int, int]] = None,
@@ -517,18 +526,18 @@ def process_image_for_ratio(
     Process image according to specified mode and ratio config.
     Returns: (processed_image, crop_box, fit_info, effective_mode, fallback_reason)
 
-    Automatic Fallback:
-    When mode == 'smart_crop' and auto_fallback is True:
-    - Calculates proposed crop.
-    - If subject bounding box would be clipped, automatically falls back to Safe Fit.
-    - Accurately reports effective_mode='safe_fit' and simple fallback_reason to frontend.
+    Modes:
+    - direct_stretch (default): Direct LANCZOS resize filling the full target frame with 100% pixel retention.
+    - smart_crop: Full-frame crop with subject centering.
+    - safe_fit: Letterbox/pillarbox padding on solid background.
+    - manual_crop: Explicit user crop box.
     """
     target_w = target_config["width"]
     target_h = target_config["height"]
     target_ratio = target_w / target_h
     orig_w, orig_h = img.size
 
-    # 1. Manual Crop
+    # 1. Manual Crop (explicit per-ratio crop)
     if manual_crop is not None:
         validated_crop = validate_manual_crop_box(manual_crop, orig_w, orig_h, target_ratio)
         cropped = img.crop(validated_crop)
@@ -536,7 +545,21 @@ def process_image_for_ratio(
         fit_info = check_subject_fit(validated_crop, subject_bbox, orig_w, orig_h)
         return result, validated_crop, fit_info, "manual_crop", None
 
-    # 2. AI Background Expansion Mode
+    # 2. Direct Stretch Mode (Default): 100% pixel preservation, zero crop, zero padding
+    if mode in ["direct_stretch", "stretch"]:
+        result = direct_stretch(img, target_w, target_h)
+        full_box = (0, 0, orig_w, orig_h)
+        fit_info = {
+            "has_subject_box": True,
+            "fits_completely": True,
+            "clipped_horizontal": False,
+            "clipped_vertical": False,
+            "removed_fraction": 0.0,
+            "message": "100% of cropped pixels preserved with full-frame direct stretch."
+        }
+        return result, full_box, fit_info, "direct_stretch", None
+
+    # 3. AI Background Expansion Mode
     if mode in ["ai_expand", "ai_outpaint"]:
         from services.ai_background_expander import expand_background_product_safe
         canvas, exp_meta = expand_background_product_safe(

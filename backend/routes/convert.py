@@ -31,7 +31,7 @@ router = APIRouter(prefix="/api", tags=["convert"])
 
 class ConvertRequest(BaseModel):
     image_id: str
-    mode: str = Field(default="smart_crop", description="smart_crop, ai_expand, safe_fit, or manual_crop")
+    mode: str = Field(default="direct_stretch", description="direct_stretch, smart_crop, ai_expand, safe_fit, or manual_crop")
     export_format: str = Field(default="jpeg", description="jpeg, png, or webp")
     quality: int = Field(default=90, ge=1, le=100)
     bg_color_hex: str = Field(default="#F8FAFC")
@@ -110,8 +110,8 @@ async def convert_image(payload: ConvertRequest):
     """
     validate_session_id(payload.image_id)
 
-    valid_modes = ["smart_crop", "ai_expand", "safe_fit", "manual_crop", "fit_contain", "smart_fit"]
-    mode = payload.mode if payload.mode in valid_modes else "smart_crop"
+    valid_modes = ["direct_stretch", "stretch", "smart_crop", "ai_expand", "safe_fit", "manual_crop", "fit_contain", "smart_fit"]
+    mode = payload.mode if payload.mode in valid_modes else "direct_stretch"
 
     valid_formats = ["jpeg", "png", "webp"]
     export_format = payload.export_format.lower() if payload.export_format.lower() in valid_formats else "jpeg"

@@ -64,7 +64,7 @@ export interface RatioOutput {
 
 export interface ConvertSettings {
   image_id: string;
-  mode: 'smart_crop' | 'ai_expand' | 'safe_fit' | 'manual_crop';
+  mode: 'direct_stretch' | 'smart_crop' | 'ai_expand' | 'safe_fit' | 'manual_crop';
   bg_color_hex: string;
   is_transparent: boolean;
   export_format: 'jpeg' | 'png' | 'webp';
@@ -246,8 +246,19 @@ export const api = {
     return `${API_BASE}/download-batch?image_ids=${imageIds.join(',')}${modeParam}`;
   },
 
-  getFullPreviewUrl(imageId: string, safeKey: string, version: number = 1, mode?: string): string {
-    const modeParam = mode ? `&mode=${encodeURIComponent(mode)}` : '';
-    return `${API_BASE}/preview-full/${imageId}/${safeKey}?v=${version}${modeParam}`;
+  getPreviewUrl(imageId: string, safeKey: string, version: number = 1, mode?: string, size?: string): string {
+    const params = new URLSearchParams();
+    params.set('v', version.toString());
+    if (mode) params.set('mode', mode);
+    if (size) params.set('size', size);
+    return `${API_BASE}/preview/${imageId}/${safeKey}?${params.toString()}`;
+  },
+
+  getFullPreviewUrl(imageId: string, safeKey: string, version: number = 1, mode?: string, size?: string): string {
+    const params = new URLSearchParams();
+    params.set('v', version.toString());
+    if (mode) params.set('mode', mode);
+    if (size) params.set('size', size);
+    return `${API_BASE}/preview-full/${imageId}/${safeKey}?${params.toString()}`;
   },
 };

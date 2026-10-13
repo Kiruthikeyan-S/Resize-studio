@@ -47,6 +47,15 @@ export const RatioCard: React.FC<RatioCardProps> = ({
     small: 'Small',
   };
 
+  const handleSizeChange = (sKey: SizeKey) => {
+    if (sKey !== selectedSize) {
+      setImageLoaded(false);
+      setSelectedSize(sKey);
+    }
+  };
+
+  const previewSrc = api.getPreviewUrl(imageId, item.safe_key, item.version, item.mode, selectedSize);
+
   return (
     <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden flex flex-col justify-between shadow-xs hover:shadow-md hover:border-slate-300 transition-all group h-full">
       {/* Card Header: Ratio Name & Orientation / Badge */}
@@ -82,7 +91,8 @@ export const RatioCard: React.FC<RatioCardProps> = ({
         )}
 
         <img
-          src={item.preview_url}
+          key={previewSrc}
+          src={previewSrc}
           alt={item.name}
           onLoad={() => setImageLoaded(true)}
           className="max-h-full max-w-full object-contain mx-auto my-auto rounded-lg shadow-sm transition-transform duration-200 group-hover/preview:scale-[1.02]"
@@ -108,7 +118,7 @@ export const RatioCard: React.FC<RatioCardProps> = ({
                 <button
                   key={sKey}
                   type="button"
-                  onClick={() => setSelectedSize(sKey)}
+                  onClick={() => handleSizeChange(sKey)}
                   className={`py-1 text-[11px] font-semibold rounded-lg transition-all cursor-pointer ${
                     isSelected
                       ? 'bg-white text-violet-700 shadow-2xs'

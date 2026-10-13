@@ -305,7 +305,7 @@ def get_ratio_source_info(image_id: str, ratio_safe_key: str) -> Tuple[str, str,
 
 def generate_all_ratios(
     image_id: str,
-    mode: str = "smart_crop",
+    mode: str = "direct_stretch",
     export_format: str = "jpeg",
     quality: int = 90,
     bg_color_hex: str = "#F8FAFC",
@@ -538,7 +538,7 @@ def regenerate_single_ratio(
 
     export_format = session_data.get("export_format", "jpeg")
     quality = session_data.get("quality", 90)
-    proc_mode = mode or session_data.get("mode", "smart_crop")
+    proc_mode = mode or session_data.get("mode", "direct_stretch")
     proc_bg_color = bg_color_hex or session_data.get("bg_color_hex", "#F8FAFC")
     proc_transparent = is_transparent if is_transparent is not None else session_data.get("is_transparent", False)
     sharpen = session_data.get("sharpen", False)
@@ -644,6 +644,30 @@ def regenerate_single_ratio(
 
         file_size = os.path.getsize(mode_path)
 
+        # Generate all 3 size variants (Large, Medium, Small) for this ratio
+        variants = []
+        for size_key in SIZE_KEYS:
+            vw, vh = SIZE_PRESETS[target_config["safe_key"]][size_key]
+            if final_img.size == (vw, vh):
+                variant_img = final_img
+            else:
+                variant_img = final_img.resize((vw, vh), resample=Image.Resampling.LANCZOS)
+            variant_name = f"image_{target_config['safe_key']}_{size_key}.{ext}"
+            variant_path = os.path.join(gen_session_dir, variant_name)
+            variant_img.save(variant_path, format=export_format.upper(), **save_kwargs)
+            variants.append({
+                "selection_id": f"{target_config['safe_key']}:{size_key}",
+                "ratio_safe_key": target_config["safe_key"],
+                "ratio_name": target_config["name"],
+                "size_key": size_key,
+                "size_label": SIZE_LABELS[size_key],
+                "width": vw,
+                "height": vh,
+                "file_name": variant_name,
+                "file_path": variant_path,
+                "file_size": os.path.getsize(variant_path),
+            })
+
         crop_w = crop_box[2] - crop_box[0]
         crop_h = crop_box[3] - crop_box[1]
         edges_trimmed = (crop_w < orig_w * 0.90) or (crop_h < orig_h * 0.90)
@@ -677,6 +701,7 @@ def regenerate_single_ratio(
             "edges_trimmed": edges_trimmed and effective_mode == "smart_crop",
             "fit_info": fit_info,
             "fallback_reason": fallback_reason,
+            "variants": variants,
         }
 
     # Update manifest atomically
@@ -690,6 +715,7 @@ def regenerate_single_ratio(
     if not updated:
         outputs.append(output_entry)
     session_data["outputs"] = outputs
+    session_data["variants"] = [v for o in outputs for v in o.get("variants", [])]
 
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(session_data, f, indent=2)

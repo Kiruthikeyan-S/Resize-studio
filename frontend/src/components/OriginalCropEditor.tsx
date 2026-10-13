@@ -563,12 +563,12 @@ export const OriginalCropEditor: React.FC<OriginalCropEditorProps> = ({
               {isSaving ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Applying Crop...</span>
+                  <span>Saving Crop...</span>
                 </>
               ) : (
                 <>
                   <Check className="w-4 h-4" />
-                  <span>Apply & Update</span>
+                  <span>Done</span>
                 </>
               )}
             </button>

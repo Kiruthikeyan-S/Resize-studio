@@ -10,9 +10,9 @@ import { OriginalCropEditor } from './components/OriginalCropEditor';
 import { PreviewModal } from './components/PreviewModal';
 import type { UploadResponse, RatioOutput, ConvertSettings } from './services/api';
 import { api } from './services/api';
-import { AlertCircle, Crop, RotateCcw, Home, Check } from 'lucide-react';
+import { AlertCircle, Crop, RotateCcw, Home, Check, Loader2, Sparkles } from 'lucide-react';
 
-export type ProcessingMode = 'smart_crop' | 'safe_fit' | 'manual_crop';
+export type ProcessingMode = 'direct_stretch' | 'smart_crop' | 'safe_fit' | 'manual_crop';
 
 export const App: React.FC = () => {
   const [images, setImages] = useState<UploadResponse[]>([]);
@@ -32,7 +32,7 @@ export const App: React.FC = () => {
 
   const [settings, setSettings] = useState<ConvertSettings>({
     image_id: '',
-    mode: 'smart_crop',
+    mode: 'direct_stretch',
     bg_color_hex: '#F8FAFC',
     is_transparent: false,
     export_format: 'jpeg',
@@ -205,13 +205,13 @@ export const App: React.FC = () => {
     });
   };
 
-  const handleUpdateOriginalSuccess = async (updatedData: UploadResponse) => {
+  const handleCropDone = (updatedData: UploadResponse) => {
     // 1. Update the image entry in images list with new dimensions, version, and master crop status
     setImages((prev) =>
       prev.map((img) => (img.image_id === updatedData.image_id ? updatedData : img))
     );
 
-    // 2. Drop outputs from any previous generation so old results/selections can never be shown or downloaded
+    // 2. Drop outputs from any previous generation so old results/selections are never shown
     setOutputsByModeMap((prev) => ({ ...prev, [updatedData.image_id]: {} }));
     setRevisionMap((prev) => {
       const copy = { ...prev };
@@ -219,14 +219,23 @@ export const App: React.FC = () => {
       return copy;
     });
 
-    // 3. Generate all ratios (and their Large/Medium/Small sizes) from this finalized working image only
+    // 3. Hide crop editor so customer sees only the cropped image review card
+    setIsEditingCrop(false);
+    setIsEditingOriginal(false);
+    setErrorMessage(null);
+  };
+
+  const handleResize = async () => {
+    if (!activeImage) return;
+
+    // Direct stretch resizing into all 5 ratios and their 15 fixed sizes
     setIsGenerating(true);
     setErrorMessage(null);
 
-    const activeMode = settings.mode || 'smart_crop';
+    const activeMode = settings.mode || 'direct_stretch';
     const activeSettings: ConvertSettings = {
       ...settings,
-      image_id: updatedData.image_id,
+      image_id: activeImage.image_id,
       mode: activeMode,
     };
 
@@ -234,17 +243,17 @@ export const App: React.FC = () => {
       const response = await api.convertImage(activeSettings);
       setOutputsByModeMap((prev) => ({
         ...prev,
-        [updatedData.image_id]: {
-          ...(prev[updatedData.image_id] || {}),
+        [activeImage.image_id]: {
+          ...(prev[activeImage.image_id] || {}),
           [activeMode]: response.outputs,
         },
       }));
       if (response.revision !== undefined) {
-        setRevisionMap((prev) => ({ ...prev, [updatedData.image_id]: response.revision as number }));
+        setRevisionMap((prev) => ({ ...prev, [activeImage.image_id]: response.revision as number }));
       }
     } catch (err: any) {
       setErrorMessage(
-        err.response?.data?.detail || err.message || 'Failed to auto-generate 5 ratios after applying framing.'
+        err.response?.data?.detail || err.message || 'Failed to resize image into 5 ratios using Direct Stretch.'
       );
     } finally {
       setIsGenerating(false);
@@ -322,8 +331,7 @@ export const App: React.FC = () => {
                 <OriginalCropEditor
                   originalData={activeImage}
                   onApply={(updated) => {
-                    handleUpdateOriginalSuccess(updated);
-                    setIsEditingCrop(false);
+                    handleCropDone(updated);
                   }}
                   onClose={activeImage.is_cropped_master ? () => setIsEditingCrop(false) : undefined}
                   onChangeImage={handleReset}
@@ -394,8 +402,8 @@ export const App: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Dimensions Bar */}
-                  <div className="px-5 py-3 bg-violet-50/70 border-t border-violet-100 flex flex-wrap items-center justify-between gap-2 text-xs">
+                  {/* Dimensions Bar & Resize Action */}
+                  <div className="px-5 py-3.5 bg-violet-50/70 border-t border-violet-100 flex flex-wrap items-center justify-between gap-3 text-xs">
                     <div className="flex items-center gap-2">
                       <span className="font-semibold text-slate-700">Active Working Dimensions:</span>
                       <span className="font-mono font-bold text-violet-700 bg-white px-2 py-0.5 rounded-md border border-violet-200">
@@ -403,16 +411,36 @@ export const App: React.FC = () => {
                       </span>
                       <span className="text-slate-400">•</span>
                       <span className="text-slate-600">
-                        The 5 aspect ratios below are generated exclusively from this cropped area.
+                        Direct Stretch will resize this cropped image into all 5 aspect ratios.
                       </span>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setIsEditingCrop(true)}
-                      className="text-xs font-semibold text-violet-700 hover:text-violet-900 underline cursor-pointer"
-                    >
-                      Change crop selection
-                    </button>
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setIsEditingCrop(true)}
+                        className="text-xs font-semibold text-slate-600 hover:text-slate-900 underline cursor-pointer"
+                      >
+                        Change crop selection
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleResize}
+                        disabled={isGenerating}
+                        className="py-2 px-5 rounded-xl bg-violet-600 hover:bg-violet-700 active:scale-[0.99] text-xs font-semibold text-white shadow-sm flex items-center gap-2 transition-all cursor-pointer disabled:opacity-50"
+                      >
+                        {isGenerating ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            <span>Resizing into 5 Ratios...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="w-3.5 h-3.5" />
+                            <span>Resize</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -435,12 +463,12 @@ export const App: React.FC = () => {
                     <p className="text-xs text-slate-500">
                       {currentOutputs.length > 0
                         ? 'All 5 commercial aspect ratios displayed horizontally side-by-side'
-                        : 'Your framing will generate all 5 ratios automatically'}
+                        : 'Click Resize to generate all 5 ratios using Direct Stretch'}
                     </p>
                   </div>
                 </div>
 
-                {/* Empty state before Apply & Update or when generating */}
+                {/* Empty state before Resize or when generating */}
                 {isGenerating ? (
                   <div className="py-20 text-center space-y-3 bg-slate-50/50 rounded-xl border border-dashed border-slate-200">
                     <div className="w-12 h-12 mx-auto rounded-full bg-violet-100 flex items-center justify-center text-violet-600 animate-spin">
@@ -450,7 +478,7 @@ export const App: React.FC = () => {
                       Generating 5 Ratios...
                     </p>
                     <p className="text-xs text-slate-500 max-w-md mx-auto">
-                      Applying product-safe framing & seamless background continuation.
+                      Applying Direct Stretch to generate Large, Medium, and Small variants.
                     </p>
                   </div>
                 ) : currentOutputs.length === 0 ? (
@@ -463,7 +491,7 @@ export const App: React.FC = () => {
                         Your five images will appear here
                       </h4>
                       <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
-                        Adjust composition or position above and click <span className="font-semibold text-violet-700">Apply & Update</span> to generate all 5 sizes.
+                        Select your crop area above, click <span className="font-semibold text-violet-700">Done</span>, then click <span className="font-semibold text-violet-700">Resize</span> to generate all 5 aspect ratios.
                       </p>
                     </div>
                   </div>
@@ -575,7 +603,7 @@ export const App: React.FC = () => {
         <OriginalCropEditor
           originalData={activeImage}
           onClose={() => setIsEditingOriginal(false)}
-          onApply={handleUpdateOriginalSuccess}
+          onApply={handleCropDone}
         />
       )}
 
