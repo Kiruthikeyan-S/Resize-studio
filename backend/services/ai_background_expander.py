@@ -13,6 +13,8 @@ import os
 import io
 import math
 import time
+import json
+import base64
 from typing import Optional, Tuple, Dict, Any, List
 import numpy as np
 import cv2
@@ -28,10 +30,18 @@ except Exception:
 
 def get_configured_ai_provider() -> Optional[str]:
     """Check which external generative AI editing provider is configured in environment."""
+    try:
+        import dotenv
+        dotenv.load_dotenv(override=True)
+    except Exception:
+        pass
+
     if os.environ.get("OPENAI_API_KEY"):
         return "openai"
     if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
         return "gemini"
+    if os.environ.get("GROQ_API_KEY"):
+        return "groq"
     return None
 
 
@@ -352,6 +362,80 @@ def call_gemini_image_edit(
         return None, f"Gemini error: {str(e)[:120]}"
 
 
+def call_groq_vision_guided_expansion(
+    source_img: Image.Image,
+    target_w: int,
+    target_h: int,
+    prompt: Optional[str] = None
+) -> Tuple[Optional[Image.Image], Optional[str]]:
+    """
+    Call Groq Vision (llama-3.2-11b-vision-preview) to analyze background composition,
+    lighting, dominant tones, and apply intelligent studio texture expansion.
+    Preserves 100% of product pixels.
+    """
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        return None, "Groq API key not configured."
+
+    try:
+        from groq import Groq
+        client = Groq(api_key=api_key, timeout=30.0)
+
+        rgb_img = source_img.convert("RGB")
+        w, h = rgb_img.size
+        scale = min(1024 / max(w, h), 1.0)
+        resized = rgb_img.resize((int(w * scale), int(h * scale)), resample=Image.Resampling.LANCZOS) if scale < 1.0 else rgb_img
+
+        buffer = io.BytesIO()
+        resized.save(buffer, format="JPEG", quality=85)
+        b64_img = base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+        system_prompt = (
+            "Analyze the image background around the perimeter. Identify the primary background color as a 6-character hex code (e.g. #3A4556). "
+            "Respond ONLY with valid JSON: {\"background_hex\": \"#RRGGBB\", \"description\": \"...\"}"
+        )
+        bg_hex = "#F8FAFC"
+        try:
+            chat_res = client.chat.completions.create(
+                model="llama-3.2-11b-vision-preview",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": system_prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}},
+                        ]
+                    }
+                ],
+                temperature=0.1,
+                max_tokens=150,
+                response_format={"type": "json_object"},
+            )
+            raw_content = chat_res.choices[0].message.content or "{}"
+            parsed = json.loads(raw_content)
+            extracted_hex = parsed.get("background_hex")
+            if extracted_hex and extracted_hex.startswith("#") and len(extracted_hex) == 7:
+                bg_hex = extracted_hex
+        except Exception:
+            pass
+
+        pw, ph, ox, oy, ext_type = calculate_expansion_canvas(w, h, target_w, target_h)
+        expanded = studio_texture_background_expansion(
+            img_rgb=rgb_img,
+            target_w=target_w,
+            target_h=target_h,
+            placed_w=pw,
+            placed_h=ph,
+            offset_x=ox,
+            offset_y=oy,
+            expansion_type=ext_type,
+            bg_color_hex=bg_hex
+        )
+        return expanded, None
+    except Exception as e:
+        return None, f"Groq error: {str(e)[:120]}"
+
+
 def expand_background_ai(
     img: Image.Image,
     target_w: int,
@@ -435,6 +519,8 @@ def expand_background_ai(
         gen_result, err_msg = call_openai_image_edit(img, target_w, target_h, prompt=prompt_hint)
     elif provider == "gemini":
         gen_result, err_msg = call_gemini_image_edit(img, target_w, target_h, prompt=prompt_hint)
+    elif provider == "groq":
+        gen_result, err_msg = call_groq_vision_guided_expansion(img, target_w, target_h, prompt=prompt_hint)
 
     if gen_result is not None:
         if gen_result.size != (target_w, target_h):
