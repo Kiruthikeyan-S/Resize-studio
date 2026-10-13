@@ -35,17 +35,20 @@ export const PreviewGrid: React.FC<PreviewGridProps> = ({
         </p>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
-        {outputs.map((item) => (
-          <RatioCard
-            key={item.safe_key}
-            item={item}
-            imageId={imageId}
-            onUpdate={onUpdateRatio}
-            onOpenCropEditor={onOpenCropEditor}
-            onOpenPreviewModal={onOpenPreviewModal}
-          />
-        ))}
+      <div className="overflow-x-auto pb-4 pt-1 -mx-2 px-2">
+        <div className="grid grid-flow-col auto-cols-[280px] sm:auto-cols-[300px] xl:auto-cols-[minmax(0,1fr)] xl:grid-cols-5 gap-4 min-w-max xl:min-w-0">
+          {outputs.map((item) => (
+            <div key={item.safe_key} className="w-full flex">
+              <RatioCard
+                item={item}
+                imageId={imageId}
+                onUpdate={onUpdateRatio}
+                onOpenCropEditor={onOpenCropEditor}
+                onOpenPreviewModal={onOpenPreviewModal}
+              />
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

@@ -6,6 +6,93 @@ import zipfile
 import io
 from typing import Dict, Any, Optional
 from services.image_processor import get_image_session_dirs
+from services.crop_engine import all_selection_ids
+
+
+class SelectionError(ValueError):
+    """Invalid client selection (unknown/duplicate ids, stale revision)."""
+
+
+class MissingOutputError(FileNotFoundError):
+    """A selected generated file no longer exists on disk."""
+
+
+def create_selected_zip_archive(
+    image_id: str,
+    selection_ids: list,
+    revision: Optional[int] = None,
+) -> io.BytesIO:
+    """
+    Build a ZIP containing ONLY the selected '<ratio>:<size>' outputs from the latest generation.
+    Files are resolved exclusively from the server-side manifest (never client paths).
+    """
+    if not selection_ids:
+        raise SelectionError("No images selected.")
+
+    valid_ids = set(all_selection_ids())
+    seen = set()
+    for sid in selection_ids:
+        if not isinstance(sid, str) or sid not in valid_ids:
+            raise SelectionError(f"Invalid selection identifier: {sid!r}")
+        if sid in seen:
+            raise SelectionError(f"Duplicate selection: {sid}")
+        seen.add(sid)
+
+    _, gen_session_dir = get_image_session_dirs(image_id)
+    metadata_path = os.path.join(gen_session_dir, "metadata.json")
+    if not os.path.exists(metadata_path):
+        raise FileNotFoundError(f"Generated outputs not found for session {image_id}")
+    with open(metadata_path, "r", encoding="utf-8") as f:
+        metadata: Dict[str, Any] = json.load(f)
+
+    current_revision = metadata.get("revision")
+    if revision is not None and revision != current_revision:
+        raise SelectionError(
+            f"Stale generation revision {revision}; current revision is {current_revision}. "
+            "Please refresh and select again."
+        )
+
+    by_id = {v["selection_id"]: v for v in metadata.get("variants", [])}
+    gen_root = os.path.realpath(gen_session_dir)
+
+    resolved = []
+    for sid in selection_ids:
+        record = by_id.get(sid)
+        if not record:
+            raise MissingOutputError(f"Output {sid} has not been generated.")
+        path = os.path.realpath(record.get("file_path", ""))
+        if os.path.commonpath([gen_root, path]) != gen_root or not os.path.isfile(path):
+            raise MissingOutputError(f"Generated file for {sid} is missing.")
+        resolved.append((record, path))
+
+    manifest = {
+        "application": "Ratio Studio",
+        "version": "1.0.0",
+        "original_filename": metadata.get("original_filename", "image"),
+        "export_format": metadata.get("export_format", "jpeg"),
+        "quality": metadata.get("quality", 90),
+        "generation_revision": current_revision,
+        "generated_at": metadata.get("generated_at"),
+        "selected_count": len(resolved),
+        "files": [],
+    }
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for record, path in resolved:
+            zf.write(path, arcname=record["file_name"])
+            manifest["files"].append({
+                "filename": record["file_name"],
+                "selection_id": record["selection_id"],
+                "ratio": record["ratio_name"],
+                "size": record["size_label"],
+                "dimensions": f"{record['width']}x{record['height']}",
+                "size_bytes": os.path.getsize(path),
+            })
+        zf.writestr("manifest.json", json.dumps(manifest, indent=2))
+
+    zip_buffer.seek(0)
+    return zip_buffer
 
 
 def create_zip_archive(image_id: str, mode: Optional[str] = None) -> io.BytesIO:

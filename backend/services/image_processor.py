@@ -14,6 +14,9 @@ from services.crop_engine import (
     calculate_crop_window,
     detect_saliency_center,
     detect_saliency_bbox,
+    SIZE_KEYS,
+    SIZE_LABELS,
+    SIZE_PRESETS,
 )
 from services.quality_manager import (
     fix_exif_orientation,
@@ -339,7 +342,9 @@ def generate_all_ratios(
         except Exception:
             pass
 
-    revision = int(prev_manifest.get("revision", 0)) + 1
+    # Monotonic revision (ms timestamp): never repeats even after a re-edit wipes the manifest,
+    # so stale client selections can always be detected.
+    revision = max(int(prev_manifest.get("revision", 0)) + 1, int(time.time() * 1000))
 
     results = []
     with Image.open(orig_path) as source_img:
@@ -425,6 +430,30 @@ def generate_all_ratios(
 
             file_size = os.path.getsize(mode_path)
 
+            # Fixed-size variants (Large/Medium/Small) derived from the same approved framing.
+            variants = []
+            for size_key in SIZE_KEYS:
+                vw, vh = SIZE_PRESETS[safe_key][size_key]
+                if final_img.size == (vw, vh):
+                    variant_img = final_img
+                else:
+                    variant_img = final_img.resize((vw, vh), resample=Image.Resampling.LANCZOS)
+                variant_name = f"image_{safe_key}_{size_key}.{ext}"
+                variant_path = os.path.join(gen_session_dir, variant_name)
+                variant_img.save(variant_path, format=export_format.upper(), **save_kwargs)
+                variants.append({
+                    "selection_id": f"{safe_key}:{size_key}",
+                    "ratio_safe_key": safe_key,
+                    "ratio_name": config["name"],
+                    "size_key": size_key,
+                    "size_label": SIZE_LABELS[size_key],
+                    "width": vw,
+                    "height": vh,
+                    "file_name": variant_name,
+                    "file_path": variant_path,
+                    "file_size": os.path.getsize(variant_path),
+                })
+
             # Determine whether edge content was trimmed
             crop_w = crop_box[2] - crop_box[0]
             crop_h = crop_box[3] - crop_box[1]
@@ -454,8 +483,10 @@ def generate_all_ratios(
                 "edges_trimmed": edges_trimmed and effective_mode == "smart_crop",
                 "fit_info": fit_info,
                 "fallback_reason": fallback_reason,
+                "variants": variants,
             })
 
+    flat_variants = [v for r in results for v in r["variants"]]
     outputs_by_mode = prev_manifest.get("outputs_by_mode", {})
     outputs_by_mode[mode] = results
 
@@ -474,6 +505,7 @@ def generate_all_ratios(
         "denoise": denoise,
         "generated_at": time.time(),
         "outputs": results,
+        "variants": flat_variants,
         "outputs_by_mode": outputs_by_mode,
     }
 

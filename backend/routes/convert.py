@@ -49,6 +49,18 @@ class FitInfoItem(BaseModel):
     message: str
 
 
+class VariantItem(BaseModel):
+    selection_id: str
+    ratio_safe_key: str
+    ratio_name: str
+    size_key: str
+    size_label: str
+    width: int
+    height: int
+    file_name: str
+    file_size: int
+
+
 class OutputRatioItem(BaseModel):
     ratio_key: str
     safe_key: str
@@ -70,6 +82,7 @@ class OutputRatioItem(BaseModel):
     edges_trimmed: Optional[bool] = False
     fit_info: Optional[FitInfoItem] = None
     fallback_reason: Optional[str] = None
+    variants: List[VariantItem] = []
 
 
 class ConvertResponse(BaseModel):
@@ -77,6 +90,7 @@ class ConvertResponse(BaseModel):
     original_filename: str
     export_format: str
     mode: str
+    revision: int = 0
     outputs: List[OutputRatioItem]
 
 
@@ -131,6 +145,7 @@ async def convert_image(payload: ConvertRequest):
         original_filename=results["original_filename"],
         export_format=results["export_format"],
         mode=results["mode"],
+        revision=results.get("revision", 0),
         outputs=results["outputs"],
     )
 

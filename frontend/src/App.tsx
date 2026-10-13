@@ -26,10 +26,12 @@ export const App: React.FC = () => {
   const [editingItem, setEditingItem] = useState<RatioOutput | null>(null);
   const [previewModalItem, setPreviewModalItem] = useState<RatioOutput | null>(null);
   const [isEditingOriginal, setIsEditingOriginal] = useState<boolean>(false);
+  // Generation revision per image (used so ZIP requests can never mix old and new outputs)
+  const [revisionMap, setRevisionMap] = useState<Record<string, number>>({});
 
   const [settings, setSettings] = useState<ConvertSettings>({
     image_id: '',
-    mode: 'ai_expand',
+    mode: 'smart_crop',
     bg_color_hex: '#F8FAFC',
     is_transparent: false,
     export_format: 'jpeg',
@@ -150,6 +152,9 @@ export const App: React.FC = () => {
             [currentMode]: response.outputs,
           },
         }));
+        if (response.revision !== undefined) {
+          setRevisionMap((prev) => ({ ...prev, [img.image_id]: response.revision as number }));
+        }
       } catch (err: any) {
         console.error(`Failed to convert ${img.original_filename}:`, err);
       }
@@ -182,11 +187,19 @@ export const App: React.FC = () => {
       prev.map((img) => (img.image_id === updatedData.image_id ? updatedData : img))
     );
 
-    // 2. Automatically generate the 5 aspect ratios right away from this finalized master image
+    // 2. Drop outputs from any previous generation so old results/selections can never be shown or downloaded
+    setOutputsByModeMap((prev) => ({ ...prev, [updatedData.image_id]: {} }));
+    setRevisionMap((prev) => {
+      const copy = { ...prev };
+      delete copy[updatedData.image_id];
+      return copy;
+    });
+
+    // 3. Generate all ratios (and their Large/Medium/Small sizes) from this finalized working image only
     setIsGenerating(true);
     setErrorMessage(null);
 
-    const activeMode = settings.mode || 'ai_expand';
+    const activeMode = settings.mode || 'smart_crop';
     const activeSettings: ConvertSettings = {
       ...settings,
       image_id: updatedData.image_id,
@@ -202,6 +215,9 @@ export const App: React.FC = () => {
           [activeMode]: response.outputs,
         },
       }));
+      if (response.revision !== undefined) {
+        setRevisionMap((prev) => ({ ...prev, [updatedData.image_id]: response.revision as number }));
+      }
     } catch (err: any) {
       setErrorMessage(
         err.response?.data?.detail || err.message || 'Failed to auto-generate 5 ratios after applying framing.'
@@ -219,10 +235,6 @@ export const App: React.FC = () => {
       queueOutputsMap[img.image_id] = modeOutputs;
     }
   }
-
-  const convertedImagesCount = images.filter(
-    (img) => (outputsByModeMap[img.image_id]?.[settings.mode]?.length || 0) > 0
-  ).length;
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col selection:bg-violet-600 selection:text-white">
@@ -298,7 +310,7 @@ export const App: React.FC = () => {
               />
             </div>
 
-            {/* Lower Section: Horizontal Full-Width Generated 5 Ratio Outputs */}
+            {/* Lower Section: Horizontal Generated 5 Ratio Outputs & Download Selection */}
             <div className="space-y-6 pt-4">
               <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-6 shadow-xs">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-100 gap-2 mb-6">
@@ -308,8 +320,8 @@ export const App: React.FC = () => {
                     </h3>
                     <p className="text-xs text-slate-500">
                       {currentOutputs.length > 0
-                        ? 'All 5 commercial aspect ratios displayed side-by-side horizontally'
-                        : 'Your framing will generate 5 ratios automatically across the width'}
+                        ? 'All 5 commercial aspect ratios displayed horizontally side-by-side'
+                        : 'Your framing will generate all 5 ratios automatically'}
                     </p>
                   </div>
                 </div>
@@ -337,38 +349,39 @@ export const App: React.FC = () => {
                         Your five images will appear here
                       </h4>
                       <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
-                        Adjust composition or position above and click <span className="font-semibold text-violet-700">Apply & Update</span> to generate all 5 sizes side-by-side.
+                        Adjust composition or position above and click <span className="font-semibold text-violet-700">Apply & Update</span> to generate all 5 sizes.
                       </p>
                     </div>
                   </div>
                 ) : (
-                  /* Horizontal Layout: ZIP card on top, then all 5 ratio cards side-by-side */
-                  <div className="space-y-6">
-                    {/* Download ZIP Archive card at top */}
+                  /* Horizontal Layout: 5 Ratio Cards Side-by-Side on top, then Choose Images to Download below */
+                  <div className="space-y-8">
+                    {/* Five Horizontal Ratio Cards (side-by-side left to right, horizontal scroll on small screens) */}
+                    <div className="w-full">
+                      <div className="overflow-x-auto pb-4 pt-1 -mx-2 px-2">
+                        <div className="grid grid-flow-col auto-cols-[280px] sm:auto-cols-[300px] xl:auto-cols-[minmax(0,1fr)] xl:grid-cols-5 gap-4 min-w-max xl:min-w-0">
+                          {currentOutputs.map((item) => (
+                            <div key={item.safe_key} className="w-full flex">
+                              <RatioCard
+                                item={item}
+                                imageId={activeImage.image_id}
+                                onOpenPreviewModal={(it: RatioOutput) => setPreviewModalItem(it)}
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Choose Images to Download + Download Selected ZIP (placed BELOW horizontal cards) */}
                     {activeImage && (
                       <DownloadAll
+                        key={`${activeImage.image_id}-${revisionMap[activeImage.image_id] ?? 0}`}
                         imageId={activeImage.image_id}
-                        totalOutputs={currentOutputs.length}
-                        allImageIds={images
-                          .filter((img) => (outputsByModeMap[img.image_id]?.[settings.mode]?.length || 0) > 0)
-                          .map((img) => img.image_id)}
-                        totalConvertedImages={convertedImagesCount}
-                        mode={settings.mode}
+                        outputs={currentOutputs}
+                        revision={revisionMap[activeImage.image_id]}
                       />
                     )}
-
-                    {/* All 5 Ratios in Horizontal Row Grid (5 columns side-by-side) */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
-                      {currentOutputs.map((item) => (
-                        <div key={item.safe_key} className="w-full">
-                          <RatioCard
-                            item={item}
-                            imageId={activeImage.image_id}
-                            onOpenPreviewModal={(it: RatioOutput) => setPreviewModalItem(it)}
-                          />
-                        </div>
-                      ))}
-                    </div>
                   </div>
                 )}
               </div>

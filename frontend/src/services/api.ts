@@ -26,6 +26,18 @@ export interface FitInfo {
   message: string;
 }
 
+export interface OutputVariant {
+  selection_id: string;
+  ratio_safe_key: string;
+  ratio_name: string;
+  size_key: 'large' | 'medium' | 'small';
+  size_label: string;
+  width: number;
+  height: number;
+  file_name: string;
+  file_size: number;
+}
+
 export interface RatioOutput {
   ratio_key: string;
   safe_key: string;
@@ -47,6 +59,7 @@ export interface RatioOutput {
   edges_trimmed?: boolean;
   fit_info?: FitInfo;
   fallback_reason?: string;
+  variants?: OutputVariant[];
 }
 
 export interface ConvertSettings {
@@ -66,8 +79,25 @@ export interface ConvertResponse {
   original_filename: string;
   export_format: string;
   mode: string;
+  revision?: number;
   outputs: RatioOutput[];
 }
+
+export const SIZE_KEYS = ['large', 'medium', 'small'] as const;
+export type SizeKey = (typeof SIZE_KEYS)[number];
+
+/** Fixed export sizes per ratio (must match backend SIZE_PRESETS). */
+export const RATIO_SIZE_TABLE: {
+  safe_key: string;
+  name: string;
+  sizes: Record<SizeKey, [number, number]>;
+}[] = [
+  { safe_key: 'square_1x1', name: 'Square (1:1)', sizes: { large: [2048, 2048], medium: [1080, 1080], small: [512, 512] } },
+  { safe_key: 'portrait_4x5', name: 'Portrait (4:5)', sizes: { large: [1600, 2000], medium: [1080, 1350], small: [800, 1000] } },
+  { safe_key: 'portrait_3x4', name: 'Portrait (3:4)', sizes: { large: [1536, 2048], medium: [1080, 1440], small: [768, 1024] } },
+  { safe_key: 'landscape_16x9', name: 'Landscape (16:9)', sizes: { large: [2560, 1440], medium: [1920, 1080], small: [1280, 720] } },
+  { safe_key: 'landscape_5x4', name: 'Landscape (5:4)', sizes: { large: [2000, 1600], medium: [1350, 1080], small: [1000, 800] } },
+];
 
 export interface GroqAnalysisResponse {
   enabled: boolean;
@@ -170,8 +200,39 @@ export const api = {
     await axios.delete(`${API_BASE}/images/${imageId}`);
   },
 
-  getDownloadUrl(imageId: string, safeKey: string, mode?: string): string {
-    const q = mode ? `?mode=${encodeURIComponent(mode)}` : '';
+  /** POST selected '<ratio>:<size>' ids; returns the ZIP blob built from the latest generation. */
+  async downloadSelectedZip(
+    imageId: string,
+    selections: string[],
+    revision?: number
+  ): Promise<Blob> {
+    try {
+      const response = await axios.post(
+        `${API_BASE}/download-selected`,
+        { image_id: imageId, selections, revision },
+        { responseType: 'blob' }
+      );
+      return response.data as Blob;
+    } catch (err: any) {
+      // With responseType 'blob', JSON error bodies arrive as a Blob; extract the server message.
+      const data = err?.response?.data;
+      let detail: string | undefined;
+      if (data instanceof Blob) {
+        try {
+          detail = JSON.parse(await data.text())?.detail;
+        } catch {
+          detail = undefined;
+        }
+      }
+      throw new Error(detail || err?.message || 'Failed to create ZIP.');
+    }
+  },
+
+  getDownloadUrl(imageId: string, safeKey: string, mode?: string, size?: string): string {
+    const params = new URLSearchParams();
+    if (mode) params.set('mode', mode);
+    if (size) params.set('size', size);
+    const q = params.toString() ? `?${params.toString()}` : '';
     return `${API_BASE}/download/${imageId}/${safeKey}${q}`;
   },
 

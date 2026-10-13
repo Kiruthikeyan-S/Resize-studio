@@ -6,7 +6,15 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from services.validator import validate_session_id
 from services.image_processor import get_image_session_dirs
-from services.zip_generator import create_zip_archive, create_multi_session_zip_archive
+from services.zip_generator import (
+    create_zip_archive,
+    create_multi_session_zip_archive,
+    create_selected_zip_archive,
+    SelectionError,
+    MissingOutputError,
+)
+from pydantic import BaseModel
+from typing import List
 from services.crop_engine import RATIO_CONFIGS, resolve_ratio_config
 
 router = APIRouter(prefix="/api", tags=["download"])
@@ -107,10 +115,12 @@ async def get_preview_full_resolution(
 async def download_single_image(
     image_id: str,
     ratio: str,
-    mode: Optional[str] = Query(default=None)
+    mode: Optional[str] = Query(default=None),
+    size: Optional[str] = Query(default=None, description="Variant size: large, medium, or small")
 ):
     """
-    Download the full-resolution output image with clean, standard descriptive filename.
+    Download the requested output image with clean, standard descriptive filename.
+    Supports variant size selection (large, medium, small).
     Never serves a thumbnail. Respects processing mode if specified.
     """
     validate_session_id(image_id)
@@ -127,8 +137,22 @@ async def download_single_image(
 
     target_file = None
     target_ext = None
+    selected_size = size.lower() if size else None
 
-    if mode:
+    # 1. If size is requested, look for the size-specific variant first
+    if selected_size:
+        for k in keys_to_check:
+            for ext in ["jpg", "jpeg", "png", "webp"]:
+                candidate = os.path.join(gen_session_dir, f"image_{k}_{selected_size}.{ext}")
+                if os.path.exists(candidate):
+                    target_file = candidate
+                    target_ext = ext
+                    break
+            if target_file:
+                break
+
+    # 2. Check mode-specific file
+    if not target_file and mode:
         for k in keys_to_check:
             for ext in ["jpg", "jpeg", "png", "webp"]:
                 candidate = os.path.join(gen_session_dir, f"image_{k}_{mode}.{ext}")
@@ -139,6 +163,7 @@ async def download_single_image(
             if target_file:
                 break
 
+    # 3. Check canonical / default file
     if not target_file:
         for k in keys_to_check:
             for ext in ["jpg", "jpeg", "png", "webp"]:
@@ -153,7 +178,10 @@ async def download_single_image(
     if not target_file:
         raise HTTPException(status_code=404, detail=f"Output for ratio {ratio} not found.")
 
-    download_filename = f"image_{canonical_safe_key}.{target_ext}"
+    if selected_size:
+        download_filename = f"image_{canonical_safe_key}_{selected_size}.{target_ext}"
+    else:
+        download_filename = f"image_{canonical_safe_key}.{target_ext}"
     media_type = f"image/{target_ext if target_ext != 'jpg' else 'jpeg'}"
 
     return FileResponse(
@@ -161,6 +189,39 @@ async def download_single_image(
         media_type=media_type,
         filename=download_filename,
         headers={"Content-Disposition": f'attachment; filename="{download_filename}"'}
+    )
+
+
+class DownloadSelectedRequest(BaseModel):
+    image_id: str
+    selections: List[str]
+    revision: Optional[int] = None
+
+
+@router.post("/download-selected")
+async def download_selected_zip(payload: DownloadSelectedRequest):
+    """
+    Package ONLY the selected '<ratio>:<size>' outputs from the latest generation into a ZIP.
+    Files are resolved from the server manifest; no client-supplied paths are accepted.
+    """
+    validate_session_id(payload.image_id)
+    try:
+        zip_stream = create_selected_zip_archive(
+            payload.image_id, payload.selections, payload.revision
+        )
+    except SelectionError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except MissingOutputError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Generated output images not found.")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to generate ZIP archive.")
+
+    return StreamingResponse(
+        zip_stream,
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="ratio-studio-selected.zip"'},
     )
 
 
