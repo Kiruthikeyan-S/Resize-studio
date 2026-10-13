@@ -5,8 +5,8 @@ import { ImageQueueBar } from './components/ImageQueueBar';
 import { ConversionSettings } from './components/ConversionSettings';
 import { RatioCard } from './components/RatioCard';
 import { DownloadAll } from './components/DownloadAll';
-import { CropEditor } from './components/CropEditor';
 import { OriginalCropEditor } from './components/OriginalCropEditor';
+import { CroppedImageReview } from './components/CroppedImageReview';
 import { PreviewModal } from './components/PreviewModal';
 import type { UploadResponse, RatioOutput, ConvertSettings } from './services/api';
 import { api } from './services/api';
@@ -23,15 +23,13 @@ export const App: React.FC = () => {
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [isBatchGenerating, setIsBatchGenerating] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [editingItem, setEditingItem] = useState<RatioOutput | null>(null);
   const [previewModalItem, setPreviewModalItem] = useState<RatioOutput | null>(null);
-  const [isEditingOriginal, setIsEditingOriginal] = useState<boolean>(false);
   // Generation revision per image (used so ZIP requests can never mix old and new outputs)
   const [revisionMap, setRevisionMap] = useState<Record<string, number>>({});
 
   const [settings, setSettings] = useState<ConvertSettings>({
     image_id: '',
-    mode: 'smart_crop',
+    mode: 'safe_fit',
     bg_color_hex: '#F8FAFC',
     is_transparent: false,
     export_format: 'jpeg',
@@ -41,7 +39,7 @@ export const App: React.FC = () => {
   });
 
   const activeImage = images.find((img) => img.image_id === activeImageId) || images[0] || null;
-  // Strictly display outputs for active image and current selected mode, sorted in specified vertical order:
+  // Five ratio cards appear horizontally after the user explicitly resizes the approved crop.
   // 1. Square (1:1), 2. Portrait (4:5), 3. Portrait (3:4), 4. Landscape (16:9), 5. Landscape (5:4)
   const ratioOrder = ['square_1x1', 'portrait_4x5', 'portrait_3x4', 'landscape_16x9', 'landscape_5x4'];
   const rawOutputs = activeImage
@@ -65,8 +63,6 @@ export const App: React.FC = () => {
         ...prev,
         image_id: uploadedList[0].image_id,
       }));
-      // Inline left panel editor is already displayed directly
-      setIsEditingOriginal(false);
     }
     setErrorMessage(null);
   };
@@ -124,8 +120,8 @@ export const App: React.FC = () => {
     setImages([]);
     setActiveImageId('');
     setOutputsByModeMap({});
+    setRevisionMap({});
     setErrorMessage(null);
-    setEditingItem(null);
     setPreviewModalItem(null);
   };
 
@@ -134,9 +130,16 @@ export const App: React.FC = () => {
     setIsBatchGenerating(true);
     setErrorMessage(null);
 
-    const currentMode = settings.mode;
+    const currentMode = 'safe_fit';
+    // Never resize a raw upload before the customer has clicked Done.
+    const approved = images.filter((img) => img.is_cropped_master);
+    if (approved.length === 0) {
+      setIsBatchGenerating(false);
+      setErrorMessage('Crop each image and click Done before resizing.');
+      return;
+    }
 
-    for (const img of images) {
+    for (const img of approved) {
       const imageSettings: ConvertSettings = {
         ...settings,
         image_id: img.image_id,
@@ -163,65 +166,57 @@ export const App: React.FC = () => {
     setIsBatchGenerating(false);
   };
 
-  const handleUpdateSingleRatio = (updated: RatioOutput) => {
-    if (!activeImage) return;
-    const currentMode = settings.mode;
-    setOutputsByModeMap((prev) => {
-      const existingForMode = prev[activeImage.image_id]?.[currentMode] || [];
-      const updatedList = existingForMode.map((item) =>
-        item.safe_key === updated.safe_key ? updated : item
-      );
-      return {
-        ...prev,
-        [activeImage.image_id]: {
-          ...(prev[activeImage.image_id] || {}),
-          [currentMode]: updatedList,
-        },
-      };
-    });
-  };
 
+  // DONE: save the exact crop, discard prior outputs, and stop. Do not resize yet.
   const handleUpdateOriginalSuccess = async (updatedData: UploadResponse) => {
-    // 1. Update the image entry in images list with new dimensions, version, and master crop status
     setImages((prev) =>
       prev.map((img) => (img.image_id === updatedData.image_id ? updatedData : img))
     );
-
-    // 2. Drop outputs from any previous generation so old results/selections can never be shown or downloaded
     setOutputsByModeMap((prev) => ({ ...prev, [updatedData.image_id]: {} }));
     setRevisionMap((prev) => {
-      const copy = { ...prev };
-      delete copy[updatedData.image_id];
-      return copy;
+      const next = { ...prev };
+      delete next[updatedData.image_id];
+      return next;
     });
+    setErrorMessage(null);
+  };
 
-    // 3. Generate all ratios (and their Large/Medium/Small sizes) from this finalized working image only
+  // RESIZE: the only entry point for generating the five ratios / fifteen fixed files.
+  // The backend reads working.png (the approved crop) as the source.
+  const handleResizeActiveImage = async () => {
+    if (!activeImage?.is_cropped_master || isGenerating) {
+      setErrorMessage('Please crop the image and click Done before resizing.');
+      return;
+    }
     setIsGenerating(true);
     setErrorMessage(null);
-
-    const activeMode = settings.mode || 'smart_crop';
-    const activeSettings: ConvertSettings = {
-      ...settings,
-      image_id: updatedData.image_id,
-      mode: activeMode,
-    };
-
+    // Do not show an old preview or offer an old ZIP while a new resize is running.
+    setOutputsByModeMap((prev) => ({ ...prev, [activeImage.image_id]: {} }));
+    setRevisionMap((prev) => {
+      const next = { ...prev };
+      delete next[activeImage.image_id];
+      return next;
+    });
     try {
-      const response = await api.convertImage(activeSettings);
+      const response = await api.convertImage({
+        ...settings,
+        image_id: activeImage.image_id,
+        mode: 'safe_fit',
+      });
       setOutputsByModeMap((prev) => ({
         ...prev,
-        [updatedData.image_id]: {
-          ...(prev[updatedData.image_id] || {}),
-          [activeMode]: response.outputs,
+        [activeImage.image_id]: {
+          [settings.mode]: response.outputs,
         },
       }));
       if (response.revision !== undefined) {
-        setRevisionMap((prev) => ({ ...prev, [updatedData.image_id]: response.revision as number }));
+        setRevisionMap((prev) => ({
+          ...prev,
+          [activeImage.image_id]: response.revision as number,
+        }));
       }
     } catch (err: any) {
-      setErrorMessage(
-        err.response?.data?.detail || err.message || 'Failed to auto-generate 5 ratios after applying framing.'
-      );
+      setErrorMessage(err.response?.data?.detail || err.message || 'Resize failed.');
     } finally {
       setIsGenerating(false);
     }
@@ -294,14 +289,22 @@ export const App: React.FC = () => {
 
             {/* Upper Section: Original Image Framing Editor & Compact Export Settings */}
             <div className="space-y-6 max-w-4xl mx-auto">
-              {activeImage && (
+              {activeImage && (activeImage.is_cropped_master ? (
+                <CroppedImageReview
+                  image={activeImage}
+                  isResizing={isGenerating}
+                  hasOutputs={currentOutputs.length > 0}
+                  onResize={handleResizeActiveImage}
+                  onChangeImage={handleReset}
+                />
+              ) : (
                 <OriginalCropEditor
                   originalData={activeImage}
                   onApply={handleUpdateOriginalSuccess}
                   onChangeImage={handleReset}
                   inline={true}
                 />
-              )}
+              ))}
 
               {/* Compact Export Settings */}
               <ConversionSettings
@@ -336,7 +339,7 @@ export const App: React.FC = () => {
                       Generating 5 Ratios...
                     </p>
                     <p className="text-xs text-slate-500 max-w-md mx-auto">
-                      Applying product-safe framing & seamless background continuation.
+                      Resizing the approved cropped image without AI or additional cropping.
                     </p>
                   </div>
                 ) : currentOutputs.length === 0 ? (
@@ -346,10 +349,14 @@ export const App: React.FC = () => {
                     </div>
                     <div>
                       <h4 className="text-base font-semibold text-slate-800">
-                        Your five images will appear here
+                        Five aspect-ratio previews will appear here
                       </h4>
                       <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
-                        Adjust composition or position above and click <span className="font-semibold text-violet-700">Apply & Update</span> to generate all 5 sizes.
+                        {activeImage?.is_cropped_master ? (
+                          <>Your crop is ready. Click <span className="font-semibold text-violet-700">Resize to 5 Ratios</span> above.</>
+                        ) : (
+                          <>Choose your crop and click <span className="font-semibold text-violet-700">Done</span> above first.</>
+                        )}
                       </p>
                     </div>
                   </div>
@@ -455,25 +462,6 @@ export const App: React.FC = () => {
           </div>
         </section>
       </main>
-
-      {/* Original Image Framing Editor Modal */}
-      {isEditingOriginal && activeImage && (
-        <OriginalCropEditor
-          originalData={activeImage}
-          onClose={() => setIsEditingOriginal(false)}
-          onApply={handleUpdateOriginalSuccess}
-        />
-      )}
-
-      {/* Individual Ratio Crop Modal */}
-      {editingItem && activeImage && (
-        <CropEditor
-          item={editingItem}
-          originalData={activeImage}
-          onClose={() => setEditingItem(null)}
-          onSave={handleUpdateSingleRatio}
-        />
-      )}
 
       {/* Full-screen Inspection Modal */}
       {previewModalItem && activeImage && (

@@ -31,7 +31,7 @@ router = APIRouter(prefix="/api", tags=["convert"])
 
 class ConvertRequest(BaseModel):
     image_id: str
-    mode: str = Field(default="smart_crop", description="smart_crop, ai_expand, safe_fit, or manual_crop")
+    mode: str = Field(default="safe_fit", description="safe_fit: preserve the complete approved crop")
     export_format: str = Field(default="jpeg", description="jpeg, png, or webp")
     quality: int = Field(default=90, ge=1, le=100)
     bg_color_hex: str = Field(default="#F8FAFC")
@@ -110,8 +110,8 @@ async def convert_image(payload: ConvertRequest):
     """
     validate_session_id(payload.image_id)
 
-    valid_modes = ["smart_crop", "ai_expand", "safe_fit", "manual_crop", "fit_contain", "smart_fit"]
-    mode = payload.mode if payload.mode in valid_modes else "smart_crop"
+    valid_modes = ["safe_fit", "fit_contain", "smart_fit", "smart_crop", "manual_crop", "ai_expand"]
+    mode = payload.mode if payload.mode in valid_modes else "safe_fit"
 
     valid_formats = ["jpeg", "png", "webp"]
     export_format = payload.export_format.lower() if payload.export_format.lower() in valid_formats else "jpeg"
@@ -122,6 +122,10 @@ async def convert_image(payload: ConvertRequest):
         for k, coords in payload.custom_crops.items():
             if len(coords) == 4:
                 custom_crops_dict[k] = (coords[0], coords[1], coords[2], coords[3])
+
+    source_meta = get_original_metadata(payload.image_id) or {}
+    if source_meta.get("is_cropped_master"):
+        mode = "safe_fit"
 
     try:
         results = generate_all_ratios(

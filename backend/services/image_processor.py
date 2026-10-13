@@ -305,7 +305,7 @@ def get_ratio_source_info(image_id: str, ratio_safe_key: str) -> Tuple[str, str,
 
 def generate_all_ratios(
     image_id: str,
-    mode: str = "smart_crop",
+    mode: str = "safe_fit",
     export_format: str = "jpeg",
     quality: int = 90,
     bg_color_hex: str = "#F8FAFC",
@@ -322,6 +322,8 @@ def generate_all_ratios(
         raise FileNotFoundError(f"Original image not found for session {image_id}")
 
     orig_meta = get_original_metadata(image_id) or {}
+    if orig_meta.get("is_cropped_master"):
+        mode = "safe_fit"
     orig_version = orig_meta.get("version", 1)
     _, gen_session_dir = get_image_session_dirs(image_id)
     os.makedirs(gen_session_dir, exist_ok=True)
@@ -538,7 +540,7 @@ def regenerate_single_ratio(
 
     export_format = session_data.get("export_format", "jpeg")
     quality = session_data.get("quality", 90)
-    proc_mode = mode or session_data.get("mode", "smart_crop")
+    proc_mode = mode or session_data.get("mode", "safe_fit")
     proc_bg_color = bg_color_hex or session_data.get("bg_color_hex", "#F8FAFC")
     proc_transparent = is_transparent if is_transparent is not None else session_data.get("is_transparent", False)
     sharpen = session_data.get("sharpen", False)
