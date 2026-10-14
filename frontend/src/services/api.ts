@@ -164,6 +164,36 @@ export interface GroqAnalysisResponse {
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string) || '/api';
 
+export function resolveUrl(url: string | undefined): string {
+  if (!url) return '';
+  if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('blob:') || url.startsWith('data:')) {
+    return url;
+  }
+  if (API_BASE.startsWith('http://') || API_BASE.startsWith('https://')) {
+    const baseHost = API_BASE.replace(/\/api\/?$/, '');
+    const cleanPath = url.startsWith('/') ? url : `/${url}`;
+    return `${baseHost}${cleanPath}`;
+  }
+  return url;
+}
+
+function normalizeUploadResponse(data: UploadResponse): UploadResponse {
+  return {
+    ...data,
+    original_url: resolveUrl(data.original_url),
+    raw_url: data.raw_url ? resolveUrl(data.raw_url) : undefined,
+  };
+}
+
+function normalizeRatioOutput(out: RatioOutput): RatioOutput {
+  return {
+    ...out,
+    preview_url: resolveUrl(out.preview_url),
+    download_url: resolveUrl(out.download_url),
+    source_url: resolveUrl(out.source_url),
+  };
+}
+
 export const api = {
   async uploadImage(file: File): Promise<UploadResponse> {
     const formData = new FormData();
@@ -171,7 +201,7 @@ export const api = {
     const response = await axios.post<UploadResponse>(`${API_BASE}/upload`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
-    return response.data;
+    return normalizeUploadResponse(response.data);
   },
 
   async uploadMultipleImages(files: File[]): Promise<UploadResponse[]> {
@@ -180,17 +210,29 @@ export const api = {
     const response = await axios.post<UploadResponse[]>(`${API_BASE}/upload-multiple`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
-    return response.data;
+    return response.data.map(normalizeUploadResponse);
   },
 
   async convertImage(settings: ConvertSettings): Promise<ConvertResponse> {
     const response = await axios.post<ConvertResponse>(`${API_BASE}/convert`, settings);
-    return response.data;
+    const data = response.data;
+    if (data.outputs) {
+      data.outputs = data.outputs.map(normalizeRatioOutput);
+    }
+    return data;
   },
 
   async convertComparison(settings: ConvertComparisonSettings): Promise<ConvertComparisonResponse> {
     const response = await axios.post<ConvertComparisonResponse>(`${API_BASE}/convert-comparison`, settings);
-    return response.data;
+    const data = response.data;
+    if (data.rows) {
+      data.rows = data.rows.map((row) => ({
+        ...row,
+        standard: normalizeRatioOutput(row.standard),
+        ai: normalizeRatioOutput(row.ai),
+      }));
+    }
+    return data;
   },
 
   async replaceRatio(
@@ -216,7 +258,7 @@ export const api = {
       formData,
       { headers: { 'Content-Type': 'multipart/form-data' } }
     );
-    return response.data;
+    return normalizeRatioOutput(response.data);
   },
 
   async adjustCrop(
@@ -229,7 +271,7 @@ export const api = {
       ratio,
       crop_box: cropBox,
     });
-    return response.data;
+    return normalizeRatioOutput(response.data);
   },
 
   async updateOriginalFraming(
@@ -240,12 +282,12 @@ export const api = {
       image_id: imageId,
       crop_box: cropBox,
     });
-    return response.data;
+    return normalizeUploadResponse(response.data);
   },
 
   async resetOriginalFraming(imageId: string): Promise<UploadResponse> {
     const response = await axios.post<UploadResponse>(`${API_BASE}/reset-original/${imageId}`);
-    return response.data;
+    return normalizeUploadResponse(response.data);
   },
 
   async deleteSession(imageId: string): Promise<void> {
