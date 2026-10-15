@@ -256,6 +256,7 @@ export const App: React.FC = () => {
         is_transparent: settings.is_transparent,
         sharpen: settings.sharpen,
         denoise: settings.denoise,
+        allow_opencv_fallback: true,
       });
 
       setComparisonRowsMap((prev) => ({

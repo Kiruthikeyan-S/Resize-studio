@@ -28,8 +28,8 @@ except Exception:
     pass
 
 
-def get_configured_ai_provider() -> Optional[str]:
-    """Check which external generative AI editing provider is configured in environment."""
+def get_configured_ai_provider() -> str:
+    """Check which generative AI editing provider is configured in environment, defaulting to built-in studio provider."""
     try:
         import dotenv
         dotenv.load_dotenv(override=True)
@@ -42,7 +42,7 @@ def get_configured_ai_provider() -> Optional[str]:
         return "gemini"
     if os.environ.get("GROQ_API_KEY"):
         return "groq"
-    return None
+    return "studio"
 
 
 def calculate_expansion_canvas(
@@ -574,6 +574,19 @@ def expand_background_ai(
         gen_result, err_msg = call_gemini_image_edit(img, target_w, target_h, prompt=prompt_hint)
     elif provider == "groq":
         gen_result, err_msg = call_groq_vision_guided_expansion(img, target_w, target_h, prompt=prompt_hint)
+    elif provider == "studio":
+        gen_result = studio_texture_background_expansion(
+            img_rgb=img.convert("RGB"),
+            target_w=target_w,
+            target_h=target_h,
+            placed_w=placed_w,
+            placed_h=placed_h,
+            offset_x=offset_x,
+            offset_y=offset_y,
+            expansion_type=expansion_type,
+            bg_color_hex=bg_color_hex
+        )
+        err_msg = None
 
     if gen_result is not None:
         if gen_result.size != (target_w, target_h):

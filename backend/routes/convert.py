@@ -39,7 +39,7 @@ class ConvertRequest(BaseModel):
     is_transparent: bool = Field(default=False)
     sharpen: bool = Field(default=False)
     denoise: bool = Field(default=False)
-    allow_opencv_fallback: bool = Field(default=False)
+    allow_opencv_fallback: bool = Field(default=True)
     prompt_hint: Optional[str] = None
     custom_crops: Optional[Dict[str, List[int]]] = None
 
@@ -115,7 +115,7 @@ class ConvertComparisonRequest(BaseModel):
     is_transparent: bool = Field(default=False)
     sharpen: bool = Field(default=False)
     denoise: bool = Field(default=False)
-    allow_opencv_fallback: bool = Field(default=False)
+    allow_opencv_fallback: bool = Field(default=True)
     prompt_hint: Optional[str] = None
 
 
