@@ -117,6 +117,7 @@ class ConvertComparisonRequest(BaseModel):
     denoise: bool = Field(default=False)
     allow_opencv_fallback: bool = Field(default=True)
     prompt_hint: Optional[str] = None
+    standard_mode: str = Field(default="safe_fit", description="safe_fit (contain) or smart_crop (cover)")
 
 
 class ConvertComparisonResponse(BaseModel):
@@ -248,6 +249,7 @@ async def convert_comparison_endpoint(payload: ConvertComparisonRequest):
             denoise=payload.denoise,
             allow_opencv_fallback=payload.allow_opencv_fallback,
             prompt_hint=payload.prompt_hint,
+            standard_mode=getattr(payload, "standard_mode", "safe_fit"),
         )
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Image session not found or expired.")

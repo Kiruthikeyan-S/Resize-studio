@@ -41,7 +41,7 @@ export const ComparisonRow: React.FC<ComparisonRowProps> = ({
         </div>
 
         {/* Method Preference Switcher */}
-        <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl self-start sm:self-center">
+        <div className="flex flex-wrap items-center gap-1.5 bg-slate-100 p-1 rounded-xl self-start sm:self-center">
           <span className="text-[11px] font-medium text-slate-500 px-2">Preference:</span>
           <button
             type="button"
@@ -70,7 +70,7 @@ export const ComparisonRow: React.FC<ComparisonRowProps> = ({
       </div>
 
       {/* Side-by-Side 2-Column Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6 w-full min-w-0">
         <ComparisonCard
           item={{ ...row.standard, method: 'standard' }}
           method="standard"

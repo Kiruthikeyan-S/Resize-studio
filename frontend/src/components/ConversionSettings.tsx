@@ -28,8 +28,41 @@ export const ConversionSettings: React.FC<ConversionSettingsProps> = ({
         </span>
       </div>
 
-      {/* Export Format & Quality Controls in Compact Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      {/* Export Format, Framing Mode & Quality Controls in Compact Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Standard Framing Mode */}
+        <div className="space-y-1.5">
+          <label className="text-xs font-semibold text-slate-600">
+            Standard Framing
+          </label>
+          <div className="flex rounded-xl bg-slate-100 p-1 border border-slate-200">
+            <button
+              type="button"
+              onClick={() => setSettings((prev) => ({ ...prev, mode: 'safe_fit' }))}
+              className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
+                settings.mode === 'safe_fit' || settings.mode === 'direct_stretch'
+                  ? 'bg-white text-violet-700 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+              title="Preserves 100% of image with natural proportions on studio background"
+            >
+              Safe Fit
+            </button>
+            <button
+              type="button"
+              onClick={() => setSettings((prev) => ({ ...prev, mode: 'smart_crop' }))}
+              className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
+                settings.mode === 'smart_crop'
+                  ? 'bg-white text-violet-700 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+              title="Subject-centered crop filling the frame without distortion"
+            >
+              Full Frame
+            </button>
+          </div>
+        </div>
+
         {/* Export Format */}
         <div className="space-y-1.5">
           <label className="text-xs font-semibold text-slate-600">

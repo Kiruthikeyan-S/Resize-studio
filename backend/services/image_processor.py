@@ -11,6 +11,7 @@ from services.crop_engine import (
     RATIO_CONFIGS,
     resolve_ratio_config,
     process_image_for_ratio,
+    process_safe_fit,
     calculate_crop_window,
     detect_saliency_center,
     detect_saliency_bbox,
@@ -526,7 +527,8 @@ def generate_comparison_pipeline(
     sharpen: bool = False,
     denoise: bool = False,
     allow_opencv_fallback: bool = False,
-    prompt_hint: Optional[str] = None
+    prompt_hint: Optional[str] = None,
+    standard_mode: str = "safe_fit"
 ) -> Dict[str, Any]:
     """
     Generate both Standard Resize (Direct Stretch) and AI Enhanced Resize
@@ -578,11 +580,12 @@ def generate_comparison_pipeline(
     os.makedirs(ai_root, exist_ok=True)
 
     ai_configured_provider = get_configured_ai_provider()
-    overall_ai_status = "ready" if ai_configured_provider else ("fallback" if allow_opencv_fallback else "unavailable")
-    overall_ai_message = None if ai_configured_provider else (
-        "AI provider unavailable; generated using OpenCV texture expansion."
-        if allow_opencv_fallback
-        else "AI provider not configured. Add OPENAI_API_KEY or GEMINI_API_KEY in backend/.env"
+    is_cloud_ai = ai_configured_provider in ["openai", "gemini"]
+    overall_ai_status = "ready" if is_cloud_ai else "studio"
+    overall_ai_message = (
+        f"Generative AI active ({ai_configured_provider.upper()})"
+        if is_cloud_ai
+        else "Local studio background extension active. Add GEMINI_API_KEY or OPENAI_API_KEY in backend/.env for deep-learning generative AI."
     )
 
     standard_outputs = []
@@ -605,9 +608,17 @@ def generate_comparison_pipeline(
             os.makedirs(ai_ratio_dir, exist_ok=True)
 
             # ==========================================
-            # 1. METHOD A: STANDARD RESIZE (DIRECT STRETCH)
+            # 1. METHOD A: STANDARD RESIZE (NO STRETCH)
             # ==========================================
-            std_large_img = direct_stretch(source_img, tw, th)
+            if standard_mode in ["smart_crop", "cover"]:
+                std_large_img, std_crop_box, _, effective_std_mode, _ = process_image_for_ratio(
+                    source_img, config, mode="smart_crop", bg_color_hex=bg_color_hex, is_transparent=is_transparent
+                )
+            else:
+                std_large_img, std_crop_box = process_safe_fit(
+                    source_img, tw, th, bg_color_hex=bg_color_hex, is_transparent=is_transparent
+                )
+                effective_std_mode = "safe_fit"
             if sharpen:
                 std_large_img = apply_mild_sharpening(std_large_img)
             if denoise:
@@ -679,8 +690,8 @@ def generate_comparison_pipeline(
                 "source_url": f"/api/original/{image_id}",
                 "source_width": orig_w,
                 "source_height": orig_h,
-                "crop_box": [0, 0, orig_w, orig_h],
-                "mode": "direct_stretch",
+                "crop_box": list(std_crop_box) if "std_crop_box" in locals() and std_crop_box else [0, 0, orig_w, orig_h],
+                "mode": effective_std_mode if "effective_std_mode" in locals() else "safe_fit",
                 "status": "ready",
                 "variants": std_variants,
             }

@@ -257,6 +257,7 @@ export const App: React.FC = () => {
         sharpen: settings.sharpen,
         denoise: settings.denoise,
         allow_opencv_fallback: true,
+        standard_mode: settings.mode === 'smart_crop' ? 'smart_crop' : 'safe_fit',
       });
 
       setComparisonRowsMap((prev) => ({

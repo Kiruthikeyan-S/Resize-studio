@@ -105,6 +105,7 @@ export interface ConvertComparisonSettings {
   denoise: boolean;
   allow_opencv_fallback?: boolean;
   prompt_hint?: string;
+  standard_mode?: 'safe_fit' | 'smart_crop';
 }
 
 export interface ConvertComparisonResponse {
