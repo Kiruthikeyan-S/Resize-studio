@@ -80,7 +80,7 @@ export const ComparisonResults: React.FC<ComparisonResultsProps> = ({
             <div>
               <h5 className="font-semibold text-slate-900">Method A: Standard Resize (Without AI)</h5>
               <p className="text-slate-600 mt-0.5 leading-relaxed">
-                Uses <strong>Proportional Lanczos Resizing</strong>. Preserves 100% of your subject with natural proportions and zero distortion or stretching.
+                Uses <strong>Direct Stretch (Lanczos)</strong>. 100% of your approved crop pixels are preserved without padding or secondary cropping. Changing aspect ratios may distort proportions.
               </p>
             </div>
           </div>
@@ -90,9 +90,9 @@ export const ComparisonResults: React.FC<ComparisonResultsProps> = ({
               <Cpu className="w-4 h-4" />
             </div>
             <div>
-              <h5 className="font-semibold text-purple-900">Method B: AI Enhanced Resize</h5>
+              <h5 className="font-semibold text-purple-900">Method B: AI Enhanced Resize (With AI)</h5>
               <p className="text-purple-800 mt-0.5 leading-relaxed">
-                Maintains natural proportions and outpaints seamless matching background. Untouched original pixels remain preserved in the center.
+                Maintains your product's natural proportions and outpaints matching background. Original cropped pixels are composited onto the final canvas.
               </p>
             </div>
           </div>

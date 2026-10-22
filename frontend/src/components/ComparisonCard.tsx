@@ -74,11 +74,11 @@ export const ComparisonCard: React.FC<ComparisonCardProps> = ({
       }`}
     >
       {/* Header */}
-      <div className={`p-4 border-b flex flex-wrap sm:flex-nowrap items-start justify-between gap-2.5 min-w-0 ${
+      <div className={`p-4 border-b flex items-start justify-between gap-3 ${
         isAI ? 'bg-purple-50/50 border-purple-100' : 'bg-slate-50/70 border-slate-100'
       }`}>
-        <div className="space-y-1 min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-1.5">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
             <span
               className={`text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-md ${
                 isAI
@@ -103,44 +103,21 @@ export const ComparisonCard: React.FC<ComparisonCardProps> = ({
             )}
             {isAI && status === 'fallback' && (
               <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-sky-100 text-sky-800 border border-sky-200">
-                Studio Fallback
+                OpenCV Fallback
               </span>
             )}
             {isAI && status === 'ready' && (
-              <span
-                className={`text-[10px] font-semibold px-2 py-0.5 rounded-md flex items-center gap-1 ${
-                  item.provider === 'gemini'
-                    ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                    : item.provider === 'openai'
-                    ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                    : 'bg-violet-100 text-violet-800 border border-violet-200'
-                }`}
-                title={
-                  item.provider === 'gemini'
-                    ? 'Generated via Google Gemini Imagen 3 Cloud AI'
-                    : item.provider === 'openai'
-                    ? 'Generated via OpenAI DALL-E Inpainting Cloud AI'
-                    : 'Generated via High-Fidelity Local Studio Outpaint Engine'
-                }
-              >
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1">
                 <Check className="w-3 h-3" />
-                <span>
-                  {item.provider === 'gemini'
-                    ? 'Gemini Imagen'
-                    : item.provider === 'openai'
-                    ? 'OpenAI DALL-E'
-                    : 'Studio Outpaint'}
-                </span>
+                <span>AI Generated</span>
               </span>
             )}
           </div>
 
-          <p className="text-xs text-slate-500 leading-relaxed">
+          <p className="text-xs text-slate-500">
             {isAI
-              ? 'Maintains natural product proportions; outpainted matching background.'
-              : item.mode === 'smart_crop'
-              ? 'Full Frame (cover). Subject-centered crop without distortion.'
-              : 'Safe Fit (contain). 100% original content preserved without distortion.'}
+              ? 'Maintains natural product proportions; outpainted background.'
+              : 'Direct stretch (Lanczos). Preserves 100% of approved pixels.'}
           </p>
         </div>
 

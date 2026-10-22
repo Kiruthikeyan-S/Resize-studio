@@ -97,122 +97,82 @@ def studio_texture_background_expansion(
     bg_color_hex: str = "#F8FAFC"
 ) -> Image.Image:
     """
-    Seamless universal background expansion:
-    1. For Studio/Product/Graphic images: Automatically identifies dominant perimeter
-       background color and extends clean, spotless matching studio canvas without zipper
-       or repeating dot artifacts.
-    2. For Complex Scenery/Photographs: Extends atmospheric horizon, sky, and terrain
-       smoothly using border-isolated diffusion without duplicating the central subject.
-    3. Re-composites pristine untouched source pixels with anti-aliasing.
+    Deterministic offline studio background expansion using edge texture replication,
+    gradient continuation, and OpenCV inpainting.
+    Composites untouched source pixels back on top so product details are 100% preserved.
     """
-    if img_rgb.mode != "RGB":
-        src_clean = img_rgb.convert("RGB")
-    else:
-        src_clean = img_rgb
-
-    placed_img = src_clean.resize((placed_w, placed_h), resample=Image.Resampling.LANCZOS)
+    placed_img = img_rgb.resize((placed_w, placed_h), resample=Image.Resampling.LANCZOS)
     placed_np = np.array(placed_img)
 
-    pad_top = max(0, offset_y)
-    pad_bottom = max(0, target_h - offset_y - placed_h)
-    pad_left = max(0, offset_x)
-    pad_right = max(0, target_w - offset_x - placed_w)
+    canvas_np = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+    edge_strip = max(4, min(32, min(placed_w, placed_h) // 10))
 
-    if pad_top == 0 and pad_bottom == 0 and pad_left == 0 and pad_right == 0:
+    if expansion_type == "horizontal":
+        left_strip = placed_np[:, :edge_strip, :]
+        right_strip = placed_np[:, -edge_strip:, :]
+
+        left_profile = np.mean(left_strip, axis=1, keepdims=True).astype(np.uint8)
+        right_profile = np.mean(right_strip, axis=1, keepdims=True).astype(np.uint8)
+
+        if offset_x > 0:
+            canvas_np[:, :offset_x, :] = np.repeat(left_profile, offset_x, axis=1)
+        right_start = offset_x + placed_w
+        if right_start < target_w:
+            rem_w = target_w - right_start
+            canvas_np[:, right_start:, :] = np.repeat(right_profile, rem_w, axis=1)
+
+        canvas_np[:, offset_x:offset_x + placed_w, :] = placed_np
+
+        mask = np.zeros((target_h, target_w), dtype=np.uint8)
+        seam_width = max(3, edge_strip // 2)
+        if offset_x > 0:
+            mask[:, max(0, offset_x - seam_width):offset_x + seam_width] = 255
+        if right_start < target_w:
+            mask[:, max(0, right_start - seam_width):min(target_w, right_start + seam_width)] = 255
+
+        bgr = cv2.cvtColor(canvas_np, cv2.COLOR_RGB2BGR)
+        blended_bgr = cv2.inpaint(bgr, mask, inpaintRadius=seam_width, flags=cv2.INPAINT_TELEA)
+        canvas_np = cv2.cvtColor(blended_bgr, cv2.COLOR_BGR2RGB)
+
+    elif expansion_type == "vertical":
+        top_strip = placed_np[:edge_strip, :, :]
+        bot_strip = placed_np[-edge_strip:, :, :]
+
+        top_profile = np.mean(top_strip, axis=0, keepdims=True).astype(np.uint8)
+        bot_profile = np.mean(bot_strip, axis=0, keepdims=True).astype(np.uint8)
+
+        if offset_y > 0:
+            canvas_np[:offset_y, :, :] = np.repeat(top_profile, offset_y, axis=0)
+        bot_start = offset_y + placed_h
+        if bot_start < target_h:
+            rem_h = target_h - bot_start
+            canvas_np[bot_start:, :, :] = np.repeat(bot_profile, rem_h, axis=0)
+
+        canvas_np[offset_y:offset_y + placed_h, :, :] = placed_np
+
+        mask = np.zeros((target_h, target_w), dtype=np.uint8)
+        seam_height = max(3, edge_strip // 2)
+        if offset_y > 0:
+            mask[max(0, offset_y - seam_height):offset_y + seam_height, :] = 255
+        if bot_start < target_h:
+            mask[max(0, bot_start - seam_height):min(target_h, bot_start + seam_height), :] = 255
+
+        bgr = cv2.cvtColor(canvas_np, cv2.COLOR_RGB2BGR)
+        blended_bgr = cv2.inpaint(bgr, mask, inpaintRadius=seam_height, flags=cv2.INPAINT_TELEA)
+        canvas_np = cv2.cvtColor(blended_bgr, cv2.COLOR_BGR2RGB)
+    else:
         return placed_img
 
-    # Analyze corners and perimeter to detect studio/solid/clean background
-    corners = np.array([
-        placed_np[0, 0],
-        placed_np[0, -1],
-        placed_np[-1, 0],
-        placed_np[-1, -1]
-    ], dtype=np.float32)
-    corner_std = np.std(corners, axis=0).mean()
-    corner_mean = np.mean(corners, axis=0)
-
-    perimeter = np.concatenate([
-        placed_np[0, :],
-        placed_np[-1, :],
-        placed_np[:, 0],
-        placed_np[:, -1]
-    ], axis=0).astype(np.float32)
-
-    diffs = np.linalg.norm(perimeter - corner_mean, axis=1)
-    match_ratio = np.mean(diffs < 30.0)
-
-    # If corners are uniform or perimeter is dominated by the corner color, it is a studio/solid background
-    is_studio_bg = (corner_std < 22.0 and match_ratio > 0.38) or (corner_std < 12.0)
-
-    canvas_np = np.zeros((target_h, target_w, 3), dtype=np.uint8)
-
-    if is_studio_bg:
-        # Clean studio fill with smooth matching background color
-        bg_rgb = np.round(corner_mean).astype(np.uint8)
-        canvas_np[:] = bg_rgb
-    else:
-        # Scenic / natural landscape atmospheric continuation
-        if pad_left > 0 or pad_right > 0:
-            strip_w = max(16, min(48, placed_w // 12))
-            left_strip = placed_np[:, :strip_w, :]
-            right_strip = placed_np[:, -strip_w:, :]
-
-            if pad_left > 0:
-                left_wing = cv2.copyMakeBorder(left_strip, 0, 0, pad_left, 0, cv2.BORDER_REFLECT_101)[:, :pad_left, :]
-                k_w = max(31, (pad_left // 8) | 1)
-                k_h = max(31, (target_h // 25) | 1)
-                blur_l = cv2.GaussianBlur(left_wing, (k_w, k_h), 0)
-                dist_l = np.linspace(1.0, 0.0, pad_left, dtype=np.float32)
-                w_l = (dist_l ** 2 * (3.0 - 2.0 * dist_l))[None, :, None]
-                final_left = (left_wing.astype(np.float32) * (1.0 - w_l * 0.85) + blur_l.astype(np.float32) * (w_l * 0.85)).astype(np.uint8)
-                canvas_np[:, :pad_left] = final_left
-
-            if pad_right > 0:
-                right_wing = cv2.copyMakeBorder(right_strip, 0, 0, 0, pad_right, cv2.BORDER_REFLECT_101)[:, strip_w:strip_w + pad_right, :]
-                k_w = max(31, (pad_right // 8) | 1)
-                k_h = max(31, (target_h // 25) | 1)
-                blur_r = cv2.GaussianBlur(right_wing, (k_w, k_h), 0)
-                dist_r = np.linspace(0.0, 1.0, pad_right, dtype=np.float32)
-                w_r = (dist_r ** 2 * (3.0 - 2.0 * dist_r))[None, :, None]
-                final_right = (right_wing.astype(np.float32) * (1.0 - w_r * 0.85) + blur_r.astype(np.float32) * (w_r * 0.85)).astype(np.uint8)
-                canvas_np[:, target_w - pad_right:] = final_right
-
-        if pad_top > 0 or pad_bottom > 0:
-            strip_h = max(16, min(48, placed_h // 12))
-            top_strip = placed_np[:strip_h, :, :]
-            bot_strip = placed_np[-strip_h:, :, :]
-
-            if pad_top > 0:
-                top_wing = cv2.copyMakeBorder(top_strip, pad_top, 0, 0, 0, cv2.BORDER_REFLECT_101)[:pad_top, :, :]
-                k_w = max(31, (target_w // 25) | 1)
-                k_h = max(31, (pad_top // 8) | 1)
-                blur_t = cv2.GaussianBlur(top_wing, (k_w, k_h), 0)
-                dist_t = np.linspace(1.0, 0.0, pad_top, dtype=np.float32)
-                w_t = (dist_t ** 2 * (3.0 - 2.0 * dist_t))[:, None, None]
-                final_top = (top_wing.astype(np.float32) * (1.0 - w_t * 0.85) + blur_t.astype(np.float32) * (w_t * 0.85)).astype(np.uint8)
-                canvas_np[:pad_top, :] = final_top
-
-            if pad_bottom > 0:
-                bot_wing = cv2.copyMakeBorder(bot_strip, 0, pad_bottom, 0, 0, cv2.BORDER_REFLECT_101)[strip_h:strip_h + pad_bottom, :, :]
-                k_w = max(31, (target_w // 25) | 1)
-                k_h = max(31, (pad_bottom // 8) | 1)
-                blur_b = cv2.GaussianBlur(bot_wing, (k_w, k_h), 0)
-                dist_b = np.linspace(0.0, 1.0, pad_bottom, dtype=np.float32)
-                w_b = (dist_b ** 2 * (3.0 - 2.0 * dist_b))[:, None, None]
-                final_bot = (bot_wing.astype(np.float32) * (1.0 - w_b * 0.85) + blur_b.astype(np.float32) * (w_b * 0.85)).astype(np.uint8)
-                canvas_np[target_h - pad_bottom:, :] = final_bot
-
-    # Composite pristine untouched source pixels onto canvas with anti-aliasing
-    canvas_np[offset_y:offset_y + placed_h, offset_x:offset_x + placed_w] = placed_np
-    canvas_img = Image.fromarray(canvas_np)
+    # Strictly re-composite pristine source pixels with anti-aliased edge blend
+    result_img = Image.fromarray(canvas_np)
     mask_im = Image.new("L", (placed_w, placed_h), 255)
     if placed_w > 8 and placed_h > 8:
         from PIL import ImageDraw
         draw = ImageDraw.Draw(mask_im)
-        draw.rectangle([0, 0, placed_w - 1, placed_h - 1], outline=220, width=1)
+        draw.rectangle([0, 0, placed_w - 1, placed_h - 1], outline=180, width=1)
 
-    canvas_img.paste(placed_img, (offset_x, offset_y), mask=mask_im)
-    return canvas_img
+    result_img.paste(placed_img, (offset_x, offset_y), mask=mask_im)
+    return result_img
 
 
 def call_openai_image_edit(
@@ -631,16 +591,14 @@ def expand_background_ai(
     if gen_result is not None:
         if gen_result.size != (target_w, target_h):
             gen_result = gen_result.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
-        is_cloud_ai = provider in ["openai", "gemini"]
         return gen_result, {
             "status": "ready",
             "method": "ai",
-            "provider": provider if is_cloud_ai else "studio",
-            "is_generative_ai": is_cloud_ai,
+            "provider": provider,
             "canvas_size": [target_w, target_h],
             "placed_box": [offset_x, offset_y, offset_x + placed_w, offset_y + placed_h],
             "product_preserved": True,
-            "error_message": None if is_cloud_ai else "Local studio background extension active. Add GEMINI_API_KEY or OPENAI_API_KEY to backend/.env for deep-learning generative AI.",
+            "error_message": None,
         }
 
     # 4. If AI provider failed
