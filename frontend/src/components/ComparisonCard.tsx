@@ -199,7 +199,7 @@ export const ComparisonCard: React.FC<ComparisonCardProps> = ({
               </h5>
               <p className="text-xs text-slate-500 mt-1 leading-relaxed">
                 {item.error_message ||
-                  'Configure OPENAI_API_KEY or GEMINI_API_KEY in backend/.env to enable real AI background expansion.'}
+                  'Configure GROQ_API_KEY in backend/.env to enable AI background expansion.'}
               </p>
             </div>
             <div className="pt-1">

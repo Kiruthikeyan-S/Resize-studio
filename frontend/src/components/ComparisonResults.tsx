@@ -104,7 +104,7 @@ export const ComparisonResults: React.FC<ComparisonResultsProps> = ({
 
         {aiStatus === 'unavailable' && (
           <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-xs">
-            <strong>Notice:</strong> {aiMessage || 'AI provider is unavailable. Configure OPENAI_API_KEY or GEMINI_API_KEY in backend/.env to generate AI outpainted images. Standard resize is fully available.'}
+            <strong>Notice:</strong> {aiMessage || 'AI provider is unavailable. Configure GROQ_API_KEY in backend/.env to generate AI-enhanced images. Standard resize is fully available.'}
           </div>
         )}
       </div>

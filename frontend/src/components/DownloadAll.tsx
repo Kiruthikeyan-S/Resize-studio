@@ -39,9 +39,8 @@ export const DownloadAll: React.FC<DownloadAllProps> = ({
       const list: RatioOutput[] = [];
       comparisonRows.forEach((r) => {
         if (r.standard) list.push({ ...r.standard, method: 'standard' });
-        if (r.gemini) list.push({ ...r.gemini, method: 'gemini' });
-        if (r.groq) list.push({ ...r.groq, method: 'groq' });
         if (r.ai) list.push({ ...r.ai, method: 'ai' });
+        else if (r.groq) list.push({ ...r.groq, method: 'groq' });
       });
       return list;
     }
@@ -67,10 +66,12 @@ export const DownloadAll: React.FC<DownloadAllProps> = ({
     const ids: string[] = [];
     if (isComparison) {
       RATIO_SIZE_TABLE.forEach((r) => {
-        (['standard', 'gemini', 'groq'] as const).forEach((m) => {
+        (['standard', 'ai'] as const).forEach((m) => {
           SIZE_KEYS.forEach((s) => {
             const sid = `${m}:${r.safe_key}:${s}`;
+            const groqSid = `groq:${r.safe_key}:${s}`;
             if (available.has(sid)) ids.push(sid);
+            else if (available.has(groqSid)) ids.push(groqSid);
           });
         });
       });
@@ -240,24 +241,10 @@ export const DownloadAll: React.FC<DownloadAllProps> = ({
                   const next = new Set<string>();
                   RATIO_SIZE_TABLE.forEach((r) => {
                     SIZE_KEYS.forEach((s) => {
-                      const sid = `gemini:${r.safe_key}:${s}`;
+                      const sid = `ai:${r.safe_key}:${s}`;
+                      const groqSid = `groq:${r.safe_key}:${s}`;
                       if (available.has(sid)) next.add(sid);
-                    });
-                  });
-                  setSelected(next);
-                }}
-                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 cursor-pointer"
-              >
-                All Gemini (15)
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const next = new Set<string>();
-                  RATIO_SIZE_TABLE.forEach((r) => {
-                    SIZE_KEYS.forEach((s) => {
-                      const sid = `groq:${r.safe_key}:${s}`;
-                      if (available.has(sid)) next.add(sid);
+                      else if (available.has(groqSid)) next.add(groqSid);
                     });
                   });
                   setSelected(next);
@@ -310,9 +297,14 @@ export const DownloadAll: React.FC<DownloadAllProps> = ({
               const pref = preferences[row.safe_key] || 'standard';
 
               if (isComparison) {
-                return (['standard', 'gemini', 'groq'] as const).map((method) => {
-                  const isPreferredRow = pref === method;
-                  const rowIds = SIZE_KEYS.map((s) => `${method}:${row.safe_key}:${s}`);
+                return (['standard', 'ai'] as const).map((method) => {
+                  const isPreferredRow = (pref === 'standard' && method === 'standard') ||
+                                         ((pref === 'ai' || pref === 'groq' || pref === 'gemini') && method === 'ai');
+                  const rowIds = SIZE_KEYS.map((s) => {
+                    const sid = `${method}:${row.safe_key}:${s}`;
+                    const groqSid = `groq:${row.safe_key}:${s}`;
+                    return available.has(sid) ? sid : (available.has(groqSid) ? groqSid : sid);
+                  });
                   const rowAvailable = rowIds.filter((id) => available.has(id));
                   const rowFull =
                     rowAvailable.length > 0 && rowAvailable.every((id) => selected.has(id));
@@ -351,20 +343,20 @@ export const DownloadAll: React.FC<DownloadAllProps> = ({
                       <td className="px-4 py-2.5 whitespace-nowrap">
                         <span
                           className={`text-[11px] font-semibold px-2 py-0.5 rounded-md border ${
-                            method === 'gemini'
-                              ? 'bg-purple-50 text-purple-700 border-purple-200'
-                              : method === 'groq'
+                            method === 'ai'
                               ? 'bg-sky-50 text-sky-700 border-sky-200'
                               : 'bg-slate-100 text-slate-700 border-slate-200'
                           }`}
                         >
-                          {method === 'gemini' ? 'Gemini AI' : method === 'groq' ? 'Groq-Assisted' : 'Standard'}
+                          {method === 'ai' ? 'Groq-Assisted' : 'Standard'}
                         </span>
                       </td>
 
                       {/* Size Checkboxes */}
                       {SIZE_KEYS.map((s) => {
-                        const id = `${method}:${row.safe_key}:${s}`;
+                        const baseId = `${method}:${row.safe_key}:${s}`;
+                        const groqId = `groq:${row.safe_key}:${s}`;
+                        const id = available.has(baseId) ? baseId : (available.has(groqId) ? groqId : baseId);
                         const [w, h] = row.sizes[s];
                         const enabled = available.has(id);
                         return (
