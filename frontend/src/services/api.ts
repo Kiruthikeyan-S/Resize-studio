@@ -29,7 +29,7 @@ export interface FitInfo {
 export interface OutputVariant {
   selection_id: string;
   legacy_selection_id?: string;
-  method?: 'standard' | 'ai';
+  method?: 'standard' | 'gemini' | 'groq' | 'ai';
   ratio_safe_key: string;
   ratio_name: string;
   size_key: 'large' | 'medium' | 'small';
@@ -45,13 +45,14 @@ export interface RatioOutput {
   ratio_key: string;
   safe_key: string;
   legacy_key?: string;
-  method?: 'standard' | 'ai';
+  method?: 'standard' | 'gemini' | 'groq' | 'ai';
   name: string;
   width: number;
   height: number;
   orientation: string;
   file_name: string;
   file_size: number;
+  file_path?: string;
   version: number;
   preview_url: string;
   download_url: string;
@@ -77,8 +78,10 @@ export interface ComparisonRow {
   height: number;
   orientation: string;
   standard: RatioOutput;
+  gemini?: RatioOutput;
+  groq?: RatioOutput;
   ai: RatioOutput;
-  preferred_method: 'standard' | 'ai';
+  preferred_method: 'standard' | 'gemini' | 'groq' | 'ai';
 }
 
 export interface ConvertSettings {
@@ -117,6 +120,12 @@ export interface ConvertComparisonResponse {
   ai_status: 'ready' | 'unavailable' | 'failed' | 'fallback';
   ai_provider?: string;
   ai_message?: string;
+  gemini_status?: 'ready' | 'unavailable' | 'failed' | 'fallback';
+  gemini_provider?: string;
+  gemini_message?: string;
+  groq_status?: 'ready' | 'unavailable' | 'failed' | 'fallback';
+  groq_provider?: string;
+  groq_message?: string;
   rows: ComparisonRow[];
   outputs: RatioOutput[];
 }
@@ -231,6 +240,8 @@ export const api = {
       data.rows = data.rows.map((row) => ({
         ...row,
         standard: normalizeRatioOutput(row.standard),
+        gemini: row.gemini ? normalizeRatioOutput(row.gemini) : undefined,
+        groq: row.groq ? normalizeRatioOutput(row.groq) : undefined,
         ai: normalizeRatioOutput(row.ai),
       }));
     }

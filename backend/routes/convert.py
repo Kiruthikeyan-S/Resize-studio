@@ -104,6 +104,8 @@ class ComparisonRatioRow(BaseModel):
     height: int
     orientation: str
     standard: OutputRatioItem
+    gemini: Optional[OutputRatioItem] = None
+    groq: Optional[OutputRatioItem] = None
     ai: OutputRatioItem
     preferred_method: str = "standard"
 
@@ -129,6 +131,12 @@ class ConvertComparisonResponse(BaseModel):
     ai_status: str
     ai_provider: Optional[str] = None
     ai_message: Optional[str] = None
+    gemini_status: Optional[str] = None
+    gemini_provider: Optional[str] = None
+    gemini_message: Optional[str] = None
+    groq_status: Optional[str] = None
+    groq_provider: Optional[str] = None
+    groq_message: Optional[str] = None
     rows: List[ComparisonRatioRow]
     outputs: List[OutputRatioItem] = []
 
@@ -186,7 +194,6 @@ async def convert_image(payload: ConvertRequest):
                 revision=results.get("revision", 0),
                 outputs=results["standard"]["outputs"],
                 rows=results["rows"],
-                ai_status=results["ai"]["status"],
             )
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail="Image session not found or expired.")
@@ -262,9 +269,15 @@ async def convert_comparison_endpoint(payload: ConvertComparisonRequest):
         original_filename=results["original_filename"],
         export_format=results["export_format"],
         revision=results.get("revision", 0),
-        ai_status=results["ai"]["status"],
-        ai_provider=results["ai"].get("provider"),
-        ai_message=results["ai"].get("error_message"),
+        ai_status=results.get("ai", {}).get("status", "ready"),
+        ai_provider=results.get("ai", {}).get("provider"),
+        ai_message=results.get("ai", {}).get("error_message"),
+        gemini_status=results.get("gemini", {}).get("status"),
+        gemini_provider=results.get("gemini", {}).get("provider"),
+        gemini_message=results.get("gemini", {}).get("error_message"),
+        groq_status=results.get("groq", {}).get("status"),
+        groq_provider=results.get("groq", {}).get("provider"),
+        groq_message=results.get("groq", {}).get("error_message"),
         rows=results["rows"],
         outputs=results["standard"]["outputs"],
     )

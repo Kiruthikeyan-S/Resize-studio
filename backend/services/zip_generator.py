@@ -63,7 +63,7 @@ def create_selected_zip_archive(
             bare_id = sid.split("standard:", 1)[1]
             if bare_id not in by_id:
                 by_id[bare_id] = v
-        elif not sid.startswith("ai:"):
+        elif not sid.startswith("ai:") and not sid.startswith("gemini:") and not sid.startswith("groq:"):
             std_id = f"standard:{sid}"
             if std_id not in by_id:
                 by_id[std_id] = v
@@ -73,7 +73,7 @@ def create_selected_zip_archive(
     resolved = []
     for sid in selection_ids:
         record = by_id.get(sid)
-        if not record and not sid.startswith("standard:") and not sid.startswith("ai:"):
+        if not record and not sid.startswith("standard:") and not sid.startswith("ai:") and not sid.startswith("gemini:") and not sid.startswith("groq:"):
             record = by_id.get(f"standard:{sid}")
         if not record:
             raise MissingOutputError(f"Output {sid} has not been generated.")

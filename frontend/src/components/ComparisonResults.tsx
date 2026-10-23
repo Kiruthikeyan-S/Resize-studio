@@ -5,12 +5,16 @@ import { SlidersHorizontal, Cpu, Image } from 'lucide-react';
 
 interface ComparisonResultsProps {
   rows: ComparisonRowType[];
-  preferences: Record<string, 'standard' | 'ai'>;
-  onPreferenceChange: (safeKey: string, method: 'standard' | 'ai') => void;
+  preferences: Record<string, 'standard' | 'gemini' | 'groq' | 'ai'>;
+  onPreferenceChange: (safeKey: string, method: 'standard' | 'gemini' | 'groq' | 'ai') => void;
   imageId: string;
   aiStatus?: string;
   aiProvider?: string;
   aiMessage?: string;
+  geminiStatus?: string;
+  geminiMessage?: string;
+  groqStatus?: string;
+  groqMessage?: string;
   onOpenPreviewModal: (item: RatioOutput) => void;
 }
 

@@ -99,13 +99,10 @@ def studio_texture_background_expansion(
 ) -> Image.Image:
     """
     Seamless high-fidelity background expansion:
-    1. For Studio/Product/Graphic images: Automatically identifies dominant perimeter
-       background color and extends a spotless matching studio canvas without streaks,
-       scanlines, or repeating pixel artifacts.
-    2. For Complex Scenery/Photographs: Extends atmospheric horizon, sky, and terrain
-       smoothly using border-isolated 2D diffusion without duplicating the central subject.
-    3. Re-composites pristine untouched source pixels with 100% opacity to eliminate
-       dark/grey border line artifacts.
+    1. For Studio/Product images with true solid backdrops: Extends matching spotless studio canvas.
+    2. For Scenery/Photographs: Extends atmospheric horizon, sky, and terrain smoothly using
+       border-isolated 2D diffusion without duplicating the central subject or creating barcode stripes.
+    3. Re-composites pristine untouched source pixels with anti-aliasing.
     """
     is_rgba = (img_rgb.mode == "RGBA")
     if is_transparent and is_rgba:
@@ -126,7 +123,7 @@ def studio_texture_background_expansion(
     if pad_top == 0 and pad_bottom == 0 and pad_left == 0 and pad_right == 0:
         return placed_img
 
-    # Analyze perimeter color variance to distinguish uniform studio backdrops from scenery
+    # Analyze perimeter color variance to distinguish truly uniform studio backdrops from scenery
     bw = max(2, min(16, min(placed_w, placed_h) // 20))
     perim_samples = np.concatenate([
         placed_np[:bw, :, :].reshape(-1, 3),
@@ -148,11 +145,12 @@ def studio_texture_background_expansion(
             except Exception:
                 custom_bg = None
 
-    if perim_std < 18.0 or custom_bg is not None:
+    # Only treat as solid studio if user specified custom background or perimeter has near-zero variance
+    if custom_bg is not None or perim_std < 4.0:
         fill_rgb = custom_bg if custom_bg is not None else tuple(int(c) for c in perim_median)
         canvas_np[:, :] = fill_rgb
-        canvas_np[offset_y:offset_y + placed_h, offset_x:offset_x + placed_w] = placed_np
     else:
+        # Border-isolated multi-scale atmospheric synthesis for scenery & photographs
         if pad_left > 0 or pad_right > 0:
             strip_w = max(16, min(48, placed_w // 12))
             left_strip = placed_np[:, :strip_w, :]
@@ -160,8 +158,8 @@ def studio_texture_background_expansion(
 
             if pad_left > 0:
                 left_wing = cv2.copyMakeBorder(left_strip, 0, 0, pad_left, 0, cv2.BORDER_REFLECT_101)[:, :pad_left, :]
-                k_w = max(31, (pad_left // 10) | 1)
-                k_h = max(31, (target_h // 30) | 1)
+                k_w = max(31, (pad_left // 8) | 1)
+                k_h = max(31, (target_h // 25) | 1)
                 blur_l = cv2.GaussianBlur(left_wing, (k_w, k_h), 0)
                 dist_l = np.linspace(1.0, 0.0, pad_left, dtype=np.float32)
                 w_l = (dist_l ** 2 * (3.0 - 2.0 * dist_l))[None, :, None]
@@ -170,8 +168,8 @@ def studio_texture_background_expansion(
 
             if pad_right > 0:
                 right_wing = cv2.copyMakeBorder(right_strip, 0, 0, 0, pad_right, cv2.BORDER_REFLECT_101)[:, strip_w:strip_w + pad_right, :]
-                k_w = max(31, (pad_right // 10) | 1)
-                k_h = max(31, (target_h // 30) | 1)
+                k_w = max(31, (pad_right // 8) | 1)
+                k_h = max(31, (target_h // 25) | 1)
                 blur_r = cv2.GaussianBlur(right_wing, (k_w, k_h), 0)
                 dist_r = np.linspace(0.0, 1.0, pad_right, dtype=np.float32)
                 w_r = (dist_r ** 2 * (3.0 - 2.0 * dist_r))[None, :, None]
@@ -185,8 +183,8 @@ def studio_texture_background_expansion(
 
             if pad_top > 0:
                 top_wing = cv2.copyMakeBorder(top_strip, pad_top, 0, 0, 0, cv2.BORDER_REFLECT_101)[:pad_top, :, :]
-                k_w = max(31, (target_w // 30) | 1)
-                k_h = max(31, (pad_top // 10) | 1)
+                k_w = max(31, (target_w // 25) | 1)
+                k_h = max(31, (pad_top // 8) | 1)
                 blur_t = cv2.GaussianBlur(top_wing, (k_w, k_h), 0)
                 dist_t = np.linspace(1.0, 0.0, pad_top, dtype=np.float32)
                 w_t = (dist_t ** 2 * (3.0 - 2.0 * dist_t))[:, None, None]
@@ -195,8 +193,8 @@ def studio_texture_background_expansion(
 
             if pad_bottom > 0:
                 bot_wing = cv2.copyMakeBorder(bot_strip, 0, pad_bottom, 0, 0, cv2.BORDER_REFLECT_101)[strip_h:strip_h + pad_bottom, :, :]
-                k_w = max(31, (target_w // 30) | 1)
-                k_h = max(31, (pad_bottom // 10) | 1)
+                k_w = max(31, (target_w // 25) | 1)
+                k_h = max(31, (pad_bottom // 8) | 1)
                 blur_b = cv2.GaussianBlur(bot_wing, (k_w, k_h), 0)
                 dist_b = np.linspace(0.0, 1.0, pad_bottom, dtype=np.float32)
                 w_b = (dist_b ** 2 * (3.0 - 2.0 * dist_b))[:, None, None]
@@ -204,7 +202,14 @@ def studio_texture_background_expansion(
                 canvas_np[target_h - pad_bottom:, :] = final_bot
 
     canvas_np[offset_y:offset_y + placed_h, offset_x:offset_x + placed_w] = placed_np
-    return Image.fromarray(canvas_np)
+    res_img = Image.fromarray(canvas_np)
+    mask_im = Image.new("L", (placed_w, placed_h), 255)
+    if placed_w > 8 and placed_h > 8:
+        from PIL import ImageDraw
+        draw = ImageDraw.Draw(mask_im)
+        draw.rectangle([0, 0, placed_w - 1, placed_h - 1], outline=220, width=1)
+    res_img.paste(placed_img, (offset_x, offset_y), mask=mask_im)
+    return res_img
 
 
 def call_openai_image_edit(
@@ -349,7 +354,9 @@ def call_gemini_image_edit(
     prompt: Optional[str] = None
 ) -> Tuple[Optional[Image.Image], Optional[str]]:
     """
-    Call Google Gemini Imagen 3 image generation if GEMINI_API_KEY is configured.
+    Call Google Gemini multimodal image generation/editing API using google-genai SDK.
+    Accepts the actual original image as input and expands the environment to fill the target canvas.
+    Re-composites pristine source pixels to ensure 100% detail preservation for subjects.
     """
     api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not api_key:
@@ -357,6 +364,8 @@ def call_gemini_image_edit(
 
     try:
         from google import genai
+        from google.genai import types
+
         client = genai.Client(api_key=api_key)
 
         orig_w, orig_h = source_img.size
@@ -364,34 +373,103 @@ def call_gemini_image_edit(
             orig_w, orig_h, target_w, target_h
         )
 
-        # Gemini Imagen generate call with context
-        edit_prompt = (
+        clean_source = source_img.convert("RGB")
+
+        # Center placed source proportionally within target aspect ratio canvas
+        placed_source = clean_source.resize((placed_w, placed_h), resample=Image.Resampling.LANCZOS)
+        context_canvas = Image.new("RGB", (target_w, target_h), (240, 240, 240))
+        context_canvas.paste(placed_source, (offset_x, offset_y))
+
+        # Downscale for API token / transfer efficiency if canvas exceeds 1536px
+        max_api_dim = 1536
+        api_scale = min(max_api_dim / float(max(target_w, target_h)), 1.0)
+        if api_scale < 1.0:
+            api_context = context_canvas.resize((int(target_w * api_scale), int(target_h * api_scale)), resample=Image.Resampling.LANCZOS)
+        else:
+            api_context = context_canvas
+
+        outpaint_prompt = (
             prompt or
-            "Commercial studio background extension for product photography, clean minimal backdrop, seamless studio lighting"
+            "Photographic background expansion and outpainting. "
+            "Seamlessly extend the environment to fill the entire target canvas frame. "
+            "The central subject, perspective, lighting, shadows, colors, horizon, and textures must remain continuous and identical to the original image. "
+            "Generate natural, seamless background extension with zero borders or seams."
         )
 
-        result = client.models.generate_images(
-            model='imagen-3.0-generate-002',
-            prompt=edit_prompt,
-            config=dict(
-                number_of_images=1,
-                output_mime_type="image/jpeg",
-                aspect_ratio="1:1" if target_w == target_h else ("16:9" if target_w > target_h else "4:3")
-            )
-        )
+        # Supported Gemini image generation and editing models
+        models_to_try = [
+            "gemini-2.5-flash-image",
+            "gemini-3.1-flash-image",
+            "gemini-3.1-flash-lite-image",
+            "gemini-3-pro-image",
+        ]
 
-        if result.generated_images:
-            gen_bytes = result.generated_images[0].image.image_bytes
-            gen_img = Image.open(io.BytesIO(gen_bytes)).convert("RGB")
-            final_img = gen_img.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
+        last_err = None
+        gen_img = None
 
-            # Re-composite pristine source pixels
-            pristine_placed = source_img.convert("RGB").resize((placed_w, placed_h), resample=Image.Resampling.LANCZOS)
-            final_img.paste(pristine_placed, (offset_x, offset_y))
-            return final_img, None
-        return None, "Gemini returned no generated images."
+        for model_name in models_to_try:
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=[
+                        clean_source,
+                        api_context,
+                        outpaint_prompt
+                    ],
+                    config=types.GenerateContentConfig(
+                        response_modalities=["IMAGE"],
+                        temperature=0.2,
+                    )
+                )
+
+                if response and hasattr(response, "candidates") and response.candidates:
+                    cand = response.candidates[0]
+                    if hasattr(cand, "content") and hasattr(cand.content, "parts"):
+                        for part in cand.content.parts:
+                            inline_data = getattr(part, "inline_data", None)
+                            if inline_data and getattr(inline_data, "data", None):
+                                raw_bytes = inline_data.data
+                                if isinstance(raw_bytes, str):
+                                    raw_bytes = base64.b64decode(raw_bytes)
+                                gen_img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+                                break
+                if gen_img is not None:
+                    break
+            except Exception as model_err:
+                err_str = str(model_err)
+                last_err = err_str
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                    return None, "Gemini API quota exceeded (Free tier request limit 0). Please enable Pay-As-You-Go billing in Google AI Studio (https://aistudio.google.com/) for Gemini generative outpainting."
+                if "401" in err_str or "invalid_api_key" in err_str.lower():
+                    return None, "Invalid Gemini API key."
+                continue
+
+        if gen_img is None:
+            if last_err:
+                if "429" in last_err or "RESOURCE_EXHAUSTED" in last_err:
+                    return None, "Gemini API quota exceeded (Free tier request limit 0). Please enable Pay-As-You-Go billing in Google AI Studio (https://aistudio.google.com/) for Gemini generative outpainting."
+                return None, f"Gemini generation error: {last_err[:120]}"
+            return None, "Gemini did not return an image."
+
+        final_img = gen_img.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
+
+        pristine_placed = clean_source.resize((placed_w, placed_h), resample=Image.Resampling.LANCZOS)
+        mask_im = Image.new("L", (placed_w, placed_h), 255)
+        if placed_w > 8 and placed_h > 8:
+            from PIL import ImageDraw
+            draw = ImageDraw.Draw(mask_im)
+            draw.rectangle([0, 0, placed_w - 1, placed_h - 1], outline=220, width=1)
+
+        final_img.paste(pristine_placed, (offset_x, offset_y), mask=mask_im)
+        return final_img, None
+
     except Exception as e:
-        return None, f"Gemini error: {str(e)[:120]}"
+        err_msg = str(e)
+        if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
+            return None, "Gemini API quota exceeded (Free tier request limit 0). Please enable Pay-As-You-Go billing in Google AI Studio (https://aistudio.google.com/) for Gemini generative outpainting."
+        if "invalid_api_key" in err_msg.lower() or "401" in err_msg:
+            return None, "Invalid Gemini API key."
+        return None, f"Gemini error: {err_msg[:120]}"
 
 
 _GROQ_BG_HEX_CACHE: Dict[str, str] = {}
@@ -535,25 +613,19 @@ def expand_background_ai(
     """
     AI-Enhanced Background Expansion for a single ratio.
     Returns: (expanded_image_or_none, metadata_dict)
-
-    Status codes:
-    - 'ready': Successfully generated using real AI provider.
-    - 'unavailable': No AI credentials configured.
-    - 'failed': AI call attempted but failed.
-    - 'fallback': Explicitly allowed OpenCV fallback used (never labeled as AI).
     """
     orig_w, orig_h = img.size
     placed_w, placed_h, offset_x, offset_y, expansion_type = calculate_expansion_canvas(
         orig_w, orig_h, target_w, target_h
     )
 
-    # 1. Exact match / virtually identical ratio: direct resize
     if expansion_type == "none":
         resized = img.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
         meta = {
             "status": "ready",
             "method": "ai",
             "provider": "direct_fit",
+            "is_generative_ai": False,
             "canvas_size": [target_w, target_h],
             "placed_box": [0, 0, target_w, target_h],
             "product_preserved": True,
@@ -561,7 +633,6 @@ def expand_background_ai(
         }
         return resized, meta
 
-    # 2. Check configured AI provider
     provider = get_configured_ai_provider()
     if not provider:
         if allow_opencv_fallback:
@@ -574,29 +645,31 @@ def expand_background_ai(
                 offset_x=offset_x,
                 offset_y=offset_y,
                 expansion_type=expansion_type,
-                bg_color_hex=bg_color_hex
+                bg_color_hex=bg_color_hex,
+                is_transparent=is_transparent
             )
             return expanded, {
                 "status": "fallback",
                 "method": "ai",
-                "provider": "opencv_fallback",
+                "provider": "studio_fallback",
+                "is_generative_ai": False,
                 "canvas_size": [target_w, target_h],
                 "placed_box": [offset_x, offset_y, offset_x + placed_w, offset_y + placed_h],
                 "product_preserved": True,
-                "error_message": "AI provider unavailable; generated using OpenCV texture expansion.",
+                "error_message": "AI provider unavailable; generated using Studio background extension.",
             }
 
         return None, {
             "status": "unavailable",
             "method": "ai",
             "provider": None,
+            "is_generative_ai": False,
             "canvas_size": [target_w, target_h],
             "placed_box": [offset_x, offset_y, offset_x + placed_w, offset_y + placed_h],
             "product_preserved": True,
-            "error_message": "AI provider not configured. Add OPENAI_API_KEY or GEMINI_API_KEY to backend/.env",
+            "error_message": "AI provider not configured. Add GEMINI_API_KEY or OPENAI_API_KEY to backend/.env",
         }
 
-    # 3. Call configured AI provider
     gen_result: Optional[Image.Image] = None
     err_msg: Optional[str] = None
 
@@ -616,24 +689,27 @@ def expand_background_ai(
             offset_x=offset_x,
             offset_y=offset_y,
             expansion_type=expansion_type,
-            bg_color_hex=bg_color_hex
+            bg_color_hex=bg_color_hex,
+            is_transparent=is_transparent
         )
         err_msg = None
 
     if gen_result is not None:
         if gen_result.size != (target_w, target_h):
             gen_result = gen_result.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
+        is_cloud_ai = provider in ["openai", "gemini"]
         return gen_result, {
-            "status": "ready",
+            "status": "ready" if is_cloud_ai else "fallback",
             "method": "ai",
-            "provider": provider,
+            "provider": provider if is_cloud_ai else "studio_fallback",
+            "is_generative_ai": is_cloud_ai,
             "canvas_size": [target_w, target_h],
             "placed_box": [offset_x, offset_y, offset_x + placed_w, offset_y + placed_h],
             "product_preserved": True,
-            "error_message": None,
+            "error_message": None if is_cloud_ai else "Generated using Studio background extension.",
         }
 
-    # 4. If AI provider failed
+    # If AI provider failed
     if allow_opencv_fallback:
         expanded = studio_texture_background_expansion(
             img_rgb=img.convert("RGB"),
@@ -644,22 +720,25 @@ def expand_background_ai(
             offset_x=offset_x,
             offset_y=offset_y,
             expansion_type=expansion_type,
-            bg_color_hex=bg_color_hex
+            bg_color_hex=bg_color_hex,
+            is_transparent=is_transparent
         )
         return expanded, {
             "status": "fallback",
             "method": "ai",
-            "provider": "opencv_fallback",
+            "provider": "studio_fallback",
+            "is_generative_ai": False,
             "canvas_size": [target_w, target_h],
             "placed_box": [offset_x, offset_y, offset_x + placed_w, offset_y + placed_h],
             "product_preserved": True,
-            "error_message": f"AI generation failed ({err_msg}). Displaying OpenCV fallback.",
+            "error_message": err_msg or "AI generation unavailable; generated using Studio background extension.",
         }
 
     return None, {
         "status": "failed",
         "method": "ai",
         "provider": provider,
+        "is_generative_ai": False,
         "canvas_size": [target_w, target_h],
         "placed_box": [offset_x, offset_y, offset_x + placed_w, offset_y + placed_h],
         "product_preserved": False,
@@ -669,4 +748,53 @@ def expand_background_ai(
 
 # Backwards-compatible alias
 expand_background_product_safe = expand_background_ai
+
+
+def expand_background_gemini(
+    img: Image.Image,
+    target_w: int,
+    target_h: int,
+    prompt_hint: Optional[str] = None,
+    **kwargs
+) -> Tuple[Optional[Image.Image], Dict[str, Any]]:
+    """Gemini AI multimodal background expansion."""
+    gen_img, err_msg = call_gemini_image_edit(img, target_w, target_h, prompt=prompt_hint)
+    if gen_img is not None:
+        return gen_img, {
+            "status": "ready",
+            "provider": "gemini",
+            "is_generative_ai": True,
+            "error_message": None,
+        }
+    return None, {
+        "status": "failed",
+        "provider": "gemini",
+        "is_generative_ai": True,
+        "error_message": err_msg or "Gemini generation failed.",
+    }
+
+
+def expand_background_groq(
+    img: Image.Image,
+    target_w: int,
+    target_h: int,
+    prompt_hint: Optional[str] = None,
+    cached_analysis: Optional[Any] = None,
+    **kwargs
+) -> Tuple[Optional[Image.Image], Dict[str, Any]]:
+    """Groq vision-guided studio background expansion."""
+    gen_img, err_msg = call_groq_vision_guided_expansion(img, target_w, target_h, prompt=prompt_hint)
+    if gen_img is not None:
+        return gen_img, {
+            "status": "ready",
+            "provider": "groq",
+            "analysis": cached_analysis or "vision_analyzed",
+            "is_generative_ai": False,
+            "error_message": None,
+        }
+    return None, {
+        "status": "failed",
+        "provider": "groq",
+        "error_message": err_msg or "Groq processing failed.",
+    }
 
