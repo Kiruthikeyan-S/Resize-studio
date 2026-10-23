@@ -158,7 +158,8 @@ def test_openai_mask_and_canvas_geometry():
                 assert call_kwargs["size"] == "1024x1024"
 
                 # Check mask transparency: alpha=0 on inpaint region, alpha=255 on protected region
-                mask_img = Image.open(io.BytesIO(call_kwargs["mask"]))
+                raw_mask = call_kwargs["mask"][1] if isinstance(call_kwargs["mask"], tuple) else call_kwargs["mask"]
+                mask_img = Image.open(io.BytesIO(raw_mask))
                 np_mask = np.array(mask_img)
                 # Outer unused borders should be alpha=255 (protected)
                 assert np_mask[0, 0, 3] == 255

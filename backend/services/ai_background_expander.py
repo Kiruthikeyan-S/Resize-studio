@@ -27,12 +27,24 @@ import numpy as np
 import cv2
 from PIL import Image, ImageOps, ImageDraw
 
-# Load environment variables from backend/.env if present
-try:
-    import dotenv
-    dotenv.load_dotenv()
-except Exception:
-    pass
+def ensure_project_env():
+    """Ensure backend/.env is loaded reliably regardless of current working directory."""
+    try:
+        import dotenv
+        this_file = os.path.abspath(__file__)
+        services_dir = os.path.dirname(this_file)
+        backend_dir = os.path.dirname(services_dir)
+        backend_env = os.path.join(backend_dir, ".env")
+        if os.path.isfile(backend_env):
+            dotenv.load_dotenv(backend_env)
+        root_env = os.path.join(os.path.dirname(backend_dir), ".env")
+        if os.path.isfile(root_env):
+            dotenv.load_dotenv(root_env)
+        dotenv.load_dotenv()
+    except Exception:
+        pass
+
+ensure_project_env()
 
 from services.groq_vision import (
     analyze_scene_for_background_expansion,
@@ -42,17 +54,15 @@ from services.groq_vision import (
 
 def get_configured_ai_provider() -> str:
     """Check which AI/expansion provider is configured in environment."""
-    try:
-        import dotenv
-        pass
-    except Exception:
-        pass
-
-    if os.environ.get("OPENAI_API_KEY"):
+    ensure_project_env()
+    key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if key:
         return "openai"
-    if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
+    gem_key = (os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", "")).strip()
+    if gem_key:
         return "gemini"
-    if os.environ.get("GROQ_API_KEY"):
+    groq_key = os.environ.get("GROQ_API_KEY", "").strip()
+    if groq_key:
         return "groq"
     return "studio"
 
@@ -172,7 +182,7 @@ def studio_texture_background_expansion(
         fill_color = custom_bg if custom_bg is not None else tuple(int(c) for c in perim_median)
         canvas_np[:, :] = fill_color
     else:
-        # Sample ambient corner tones to build a natural continuous lighting field
+        # 1. Continuous 2D atmospheric ambient canvas (smooth bilinear gradient from 4 corners)
         corner_sz = max(4, min(16, min(placed_w, placed_h) // 10))
         tl = np.median(placed_np[:corner_sz, :corner_sz], axis=(0, 1)).astype(np.float32)
         tr = np.median(placed_np[:corner_sz, -corner_sz:], axis=(0, 1)).astype(np.float32)
@@ -187,72 +197,92 @@ def studio_texture_background_expansion(
 
         canvas_f = ambient_canvas.copy()
 
-        # 1. HORIZONTAL EXTENSION (WINGS) - Non-oscillating monotonic boundary diffusion
-        # Eliminates repeated zigzag patterns and barcode stripes by smoothly diffusing the boundary pixels
-        if pad_left > 0:
-            left_col = placed_np[:, 0, :].astype(np.float32)
-            left_ext = np.repeat(left_col[:, None, :], pad_left, axis=1)
-            kw = max(3, (pad_left // 8) * 2 + 1)
-            kh = max(3, (placed_h // 20) * 2 + 1)
-            left_ext_smooth = cv2.GaussianBlur(left_ext, (kw, kh), 0)
+        # 2. Localized boundary transition bands without 1D horizontal extrusion streaks
+        # Instead of repeating the 1px edge column across the whole margin, we smoothly transition
+        # over a decay band of max 48px from the image edge into the harmonious ambient lighting field.
+        decay_max = 48
 
-            # Monotonic cubic smoothstep: 0 at outer canvas edge, 1 at placed image boundary
-            w = np.linspace(0.0, 1.0, pad_left, dtype=np.float32)[None, :, None]
-            w_blend = w ** 2 * (3.0 - 2.0 * w)
-            wing_left = ambient_canvas[offset_y:offset_y + placed_h, :pad_left] * (1.0 - w_blend) + left_ext_smooth * w_blend
-            canvas_f[offset_y:offset_y + placed_h, :pad_left] = wing_left
+        if pad_left > 0:
+            edge_col = placed_np[:, 0, :].astype(np.float32)
+            decay_w = min(pad_left, decay_max)
+            start_x = offset_x - decay_w
+            t = np.linspace(0.0, 1.0, decay_w, dtype=np.float32)[None, :, None]
+            t_smooth = 0.5 - 0.5 * np.cos(np.pi * t)
+            ambient_band = ambient_canvas[offset_y:offset_y + placed_h, start_x:offset_x]
+            band_col = np.repeat(edge_col[:, None, :], decay_w, axis=1)
+            kw = max(3, (decay_w // 4) * 2 + 1)
+            kh = max(3, (placed_h // 25) * 2 + 1)
+            band_col_smooth = cv2.GaussianBlur(band_col, (kw, kh), 0)
+            canvas_f[offset_y:offset_y + placed_h, start_x:offset_x] = ambient_band * (1.0 - t_smooth) + band_col_smooth * t_smooth
 
         if pad_right > 0:
-            right_col = placed_np[:, -1, :].astype(np.float32)
-            right_ext = np.repeat(right_col[:, None, :], pad_right, axis=1)
-            kw = max(3, (pad_right // 8) * 2 + 1)
-            kh = max(3, (placed_h // 20) * 2 + 1)
-            right_ext_smooth = cv2.GaussianBlur(right_ext, (kw, kh), 0)
+            edge_col = placed_np[:, -1, :].astype(np.float32)
+            decay_w = min(pad_right, decay_max)
+            end_x = offset_x + placed_w + decay_w
+            t = np.linspace(1.0, 0.0, decay_w, dtype=np.float32)[None, :, None]
+            t_smooth = 0.5 - 0.5 * np.cos(np.pi * t)
+            ambient_band = ambient_canvas[offset_y:offset_y + placed_h, offset_x + placed_w:end_x]
+            band_col = np.repeat(edge_col[:, None, :], decay_w, axis=1)
+            kw = max(3, (decay_w // 4) * 2 + 1)
+            kh = max(3, (placed_h // 25) * 2 + 1)
+            band_col_smooth = cv2.GaussianBlur(band_col, (kw, kh), 0)
+            canvas_f[offset_y:offset_y + placed_h, offset_x + placed_w:end_x] = ambient_band * (1.0 - t_smooth) + band_col_smooth * t_smooth
 
-            w = np.linspace(1.0, 0.0, pad_right, dtype=np.float32)[None, :, None]
-            w_blend = w ** 2 * (3.0 - 2.0 * w)
-            wing_right = ambient_canvas[offset_y:offset_y + placed_h, target_w - pad_right:] * (1.0 - w_blend) + right_ext_smooth * w_blend
-            canvas_f[offset_y:offset_y + placed_h, target_w - pad_right:] = wing_right
-
-        # 2. VERTICAL EXTENSION (MARGINS) - Non-oscillating monotonic boundary diffusion
         if pad_top > 0:
-            top_row = placed_np[0, :, :].astype(np.float32)
-            top_ext = np.repeat(top_row[None, :, :], pad_top, axis=0)
-            kw = max(3, (placed_w // 20) * 2 + 1)
-            kh = max(3, (pad_top // 8) * 2 + 1)
-            top_ext_smooth = cv2.GaussianBlur(top_ext, (kw, kh), 0)
-
-            w = np.linspace(0.0, 1.0, pad_top, dtype=np.float32)[:, None, None]
-            w_blend = w ** 2 * (3.0 - 2.0 * w)
-            margin_top = ambient_canvas[:pad_top, offset_x:offset_x + placed_w] * (1.0 - w_blend) + top_ext_smooth * w_blend
-            canvas_f[:pad_top, offset_x:offset_x + placed_w] = margin_top
+            edge_row = placed_np[0, :, :].astype(np.float32)
+            decay_h = min(pad_top, decay_max)
+            start_y = offset_y - decay_h
+            t = np.linspace(0.0, 1.0, decay_h, dtype=np.float32)[:, None, None]
+            t_smooth = 0.5 - 0.5 * np.cos(np.pi * t)
+            ambient_band = ambient_canvas[start_y:offset_y, offset_x:offset_x + placed_w]
+            band_row = np.repeat(edge_row[None, :, :], decay_h, axis=0)
+            kw = max(3, (placed_w // 25) * 2 + 1)
+            kh = max(3, (decay_h // 4) * 2 + 1)
+            band_row_smooth = cv2.GaussianBlur(band_row, (kw, kh), 0)
+            canvas_f[start_y:offset_y, offset_x:offset_x + placed_w] = ambient_band * (1.0 - t_smooth) + band_row_smooth * t_smooth
 
         if pad_bottom > 0:
-            bot_row = placed_np[-1, :, :].astype(np.float32)
-            bot_ext = np.repeat(bot_row[None, :, :], pad_bottom, axis=0)
-            kw = max(3, (placed_w // 20) * 2 + 1)
-            kh = max(3, (pad_bottom // 8) * 2 + 1)
-            bot_ext_smooth = cv2.GaussianBlur(bot_ext, (kw, kh), 0)
-
-            w = np.linspace(1.0, 0.0, pad_bottom, dtype=np.float32)[:, None, None]
-            w_blend = w ** 2 * (3.0 - 2.0 * w)
-            margin_bot = ambient_canvas[target_h - pad_bottom:, offset_x:offset_x + placed_w] * (1.0 - w_blend) + bot_ext_smooth * w_blend
-            canvas_f[target_h - pad_bottom:, offset_x:offset_x + placed_w] = margin_bot
+            edge_row = placed_np[-1, :, :].astype(np.float32)
+            decay_h = min(pad_bottom, decay_max)
+            end_y = offset_y + placed_h + decay_h
+            t = np.linspace(1.0, 0.0, decay_h, dtype=np.float32)[:, None, None]
+            t_smooth = 0.5 - 0.5 * np.cos(np.pi * t)
+            ambient_band = ambient_canvas[offset_y + placed_h:end_y, offset_x:offset_x + placed_w]
+            band_row = np.repeat(edge_row[None, :, :], decay_h, axis=0)
+            kw = max(3, (placed_w // 25) * 2 + 1)
+            kh = max(3, (decay_h // 4) * 2 + 1)
+            band_row_smooth = cv2.GaussianBlur(band_row, (kw, kh), 0)
+            canvas_f[offset_y + placed_h:end_y, offset_x:offset_x + placed_w] = ambient_band * (1.0 - t_smooth) + band_row_smooth * t_smooth
 
         canvas_np = np.clip(canvas_f, 0, 255).astype(np.uint8)
 
-    # 3. COMPOSITE PRISTINE ORIGINAL PIXELS
-    canvas_np[offset_y:offset_y + placed_h, offset_x:offset_x + placed_w] = placed_np
-    res_img = Image.fromarray(canvas_np)
+    # 3. SEAMLESS COMPOSITING WITH SMOOTH COSINE ALPHA MASK
+    # Completely eliminates the vertical and horizontal seam lines between source photo and canvas
+    blend_sz = min(18, min(placed_w, placed_h) // 16)
+    if blend_sz >= 2:
+        alpha_mask = np.ones((placed_h, placed_w), dtype=np.float32)
+        if pad_left > 0:
+            for x in range(blend_sz):
+                alpha_mask[:, x] *= (0.5 - 0.5 * np.cos(np.pi * x / blend_sz))
+        if pad_right > 0:
+            for x in range(blend_sz):
+                alpha_mask[:, placed_w - 1 - x] *= (0.5 - 0.5 * np.cos(np.pi * x / blend_sz))
+        if pad_top > 0:
+            for y in range(blend_sz):
+                alpha_mask[y, :] *= (0.5 - 0.5 * np.cos(np.pi * y / blend_sz))
+        if pad_bottom > 0:
+            for y in range(blend_sz):
+                alpha_mask[placed_h - 1 - y, :] *= (0.5 - 0.5 * np.cos(np.pi * y / blend_sz))
 
-    # Feather edge border 1px to avoid rasterization gap
-    mask_im = Image.new("L", (placed_w, placed_h), 255)
-    if placed_w > 8 and placed_h > 8:
-        draw = ImageDraw.Draw(mask_im)
-        draw.rectangle([0, 0, placed_w - 1, placed_h - 1], outline=215, width=1)
+        placed_f = placed_np.astype(np.float32)
+        roi_target = canvas_np[offset_y:offset_y + placed_h, offset_x:offset_x + placed_w].astype(np.float32)
+        alpha_3d = alpha_mask[:, :, None]
+        composited = placed_f * alpha_3d + roi_target * (1.0 - alpha_3d)
+        canvas_np[offset_y:offset_y + placed_h, offset_x:offset_x + placed_w] = np.clip(composited, 0, 255).astype(np.uint8)
+    else:
+        canvas_np[offset_y:offset_y + placed_h, offset_x:offset_x + placed_w] = placed_np
 
-    res_img.paste(placed_img, (offset_x, offset_y), mask=mask_im)
-    return res_img
+    return Image.fromarray(canvas_np)
 
 
 # =========================================================================
@@ -309,7 +339,8 @@ class OpenAIOutpaintingProvider(BaseOutpaintingProvider):
         return True
 
     def is_configured(self) -> bool:
-        return bool(os.environ.get("OPENAI_API_KEY"))
+        ensure_project_env()
+        return bool(os.environ.get("OPENAI_API_KEY", "").strip())
 
     def outpaint(
         self,
@@ -321,13 +352,14 @@ class OpenAIOutpaintingProvider(BaseOutpaintingProvider):
         bg_color_hex: str = "#F8FAFC",
         is_transparent: bool = False,
     ) -> Tuple[Optional[Image.Image], Optional[str]]:
-        api_key = os.environ.get("OPENAI_API_KEY")
+        ensure_project_env()
+        api_key = os.environ.get("OPENAI_API_KEY", "").strip()
         if not api_key:
-            return None, "OpenAI API key not configured."
+            return None, "OPENAI_API_KEY is not configured in backend/.env. Please configure your OpenAI API key."
 
         try:
             from openai import OpenAI
-            client = OpenAI(api_key=api_key, timeout=50.0)
+            client = OpenAI(api_key=api_key, timeout=60.0)
 
             square_size = 1024
             target_ratio = target_w / float(target_h)
@@ -393,23 +425,29 @@ class OpenAIOutpaintingProvider(BaseOutpaintingProvider):
             )
 
             response = client.images.edit(
-                image=img_bytes,
-                mask=mask_bytes,
+                image=("image.png", img_bytes, "image/png"),
+                mask=("mask.png", mask_bytes, "image/png"),
                 prompt=edit_prompt,
                 n=1,
-                size="1024x1024"
+                size="1024x1024",
+                response_format="b64_json"
             )
 
-            if not response.data or not response.data[0].url:
-                return None, "OpenAI did not return an image URL."
+            generated_square = None
+            if response.data and len(response.data) > 0:
+                first_item = response.data[0]
+                b64_str = getattr(first_item, "b64_json", None)
+                if b64_str and isinstance(b64_str, (str, bytes)):
+                    raw_data = base64.b64decode(b64_str)
+                    generated_square = Image.open(io.BytesIO(raw_data)).convert("RGB")
+                elif getattr(first_item, "url", None) and isinstance(getattr(first_item, "url"), str):
+                    import httpx
+                    resp = httpx.get(first_item.url, timeout=35.0)
+                    if resp.status_code == 200:
+                        generated_square = Image.open(io.BytesIO(resp.content)).convert("RGB")
 
-            image_url = response.data[0].url
-            import httpx
-            resp = httpx.get(image_url, timeout=35.0)
-            if resp.status_code != 200:
-                return None, f"Failed to download generated image from OpenAI (HTTP {resp.status_code})."
-
-            generated_square = Image.open(io.BytesIO(resp.content)).convert("RGB")
+            if generated_square is None:
+                return None, "OpenAI outpainting did not return image data."
 
             # 5. Crop exact target bounding box
             cropped_target = generated_square.crop((box_x, box_y, box_x + box_w, box_y + box_h))
@@ -422,20 +460,37 @@ class OpenAIOutpaintingProvider(BaseOutpaintingProvider):
                 orig_w, orig_h, target_w, target_h
             )
             pristine_placed = source_img.convert("RGB").resize((final_pw, final_ph), resample=Image.Resampling.LANCZOS)
-            feather_mask = Image.new("L", (final_pw, final_ph), 255)
-            if final_pw > 8 and final_ph > 8:
-                draw = ImageDraw.Draw(feather_mask)
-                draw.rectangle([0, 0, final_pw - 1, final_ph - 1], outline=215, width=1)
+            
+            # Smooth cosine edge feathering on the boundary to guarantee zero visible seam
+            feather_sz = min(16, min(final_pw, final_ph) // 16)
+            if feather_sz >= 2:
+                feather_np = np.ones((final_ph, final_pw), dtype=np.float32)
+                if final_ox > 0:
+                    for x in range(feather_sz):
+                        feather_np[:, x] *= (0.5 - 0.5 * np.cos(np.pi * x / feather_sz))
+                        feather_np[:, final_pw - 1 - x] *= (0.5 - 0.5 * np.cos(np.pi * x / feather_sz))
+                if final_oy > 0:
+                    for y in range(feather_sz):
+                        feather_np[y, :] *= (0.5 - 0.5 * np.cos(np.pi * y / feather_sz))
+                        feather_np[final_ph - 1 - y, :] *= (0.5 - 0.5 * np.cos(np.pi * y / feather_sz))
+                
+                final_np = np.array(final_img).astype(np.float32)
+                pristine_np = np.array(pristine_placed).astype(np.float32)
+                roi = final_np[final_oy:final_oy + final_ph, final_ox:final_ox + final_pw]
+                f_3d = feather_np[:, :, None]
+                final_np[final_oy:final_oy + final_ph, final_ox:final_ox + final_pw] = pristine_np * f_3d + roi * (1.0 - f_3d)
+                final_img = Image.fromarray(np.clip(final_np, 0, 255).astype(np.uint8))
+            else:
+                final_img.paste(pristine_placed, (final_ox, final_oy))
 
-            final_img.paste(pristine_placed, (final_ox, final_oy), mask=feather_mask)
             return final_img, None
 
         except Exception as e:
             err_msg = str(e)
             if "insufficient_quota" in err_msg or "rate_limit" in err_msg:
                 return None, "OpenAI API quota or rate limit exceeded."
-            if "invalid_api_key" in err_msg or "401" in err_msg:
-                return None, "Invalid OpenAI API key."
+            if "invalid_api_key" in err_msg or "401" in err_msg or "Incorrect API key" in err_msg:
+                return None, "Invalid OpenAI API key configured in backend/.env."
             return None, f"OpenAI outpainting error: {err_msg[:120]}"
 
 
