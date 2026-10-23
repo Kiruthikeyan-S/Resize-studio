@@ -172,111 +172,74 @@ def studio_texture_background_expansion(
         fill_color = custom_bg if custom_bg is not None else tuple(int(c) for c in perim_median)
         canvas_np[:, :] = fill_color
     else:
-        # Determine safe strip bounds using vision subject bounding box
-        # subject_box format: [ymin%, xmin%, ymax%, xmax%]
-        subj_box = info.get("subject_box") or [10, 10, 90, 90]
-        try:
-            ymin_pct = subj_box[0] / 100.0 if len(subj_box) >= 4 else 0.15
-            xmin_pct = subj_box[1] / 100.0 if len(subj_box) >= 4 else 0.15
-            ymax_pct = subj_box[2] / 100.0 if len(subj_box) >= 4 else 0.85
-            xmax_pct = subj_box[3] / 100.0 if len(subj_box) >= 4 else 0.85
-        except Exception:
-            ymin_pct, xmin_pct, ymax_pct, xmax_pct = 0.15, 0.15, 0.85, 0.85
+        # Sample ambient corner tones to build a natural continuous lighting field
+        corner_sz = max(4, min(16, min(placed_w, placed_h) // 10))
+        tl = np.median(placed_np[:corner_sz, :corner_sz], axis=(0, 1)).astype(np.float32)
+        tr = np.median(placed_np[:corner_sz, -corner_sz:], axis=(0, 1)).astype(np.float32)
+        bl = np.median(placed_np[-corner_sz:, :corner_sz], axis=(0, 1)).astype(np.float32)
+        br = np.median(placed_np[-corner_sz:, -corner_sz:], axis=(0, 1)).astype(np.float32)
 
-        # Maximum width of edge strip we can sample without touching central subject
-        max_left_strip = max(8, min(int(round(placed_w * xmin_pct * 0.7)), placed_w // 10))
-        max_right_strip = max(8, min(int(round(placed_w * (1.0 - xmax_pct) * 0.7)), placed_w // 10))
-        max_top_strip = max(8, min(int(round(placed_h * ymin_pct * 0.7)), placed_h // 10))
-        max_bot_strip = max(8, min(int(round(placed_h * (1.0 - ymax_pct) * 0.7)), placed_h // 10))
+        y_norm = np.linspace(0.0, 1.0, target_h, dtype=np.float32)[:, None, None]
+        x_norm = np.linspace(0.0, 1.0, target_w, dtype=np.float32)[None, :, None]
+        top_edge = tl * (1.0 - x_norm) + tr * x_norm
+        bot_edge = bl * (1.0 - x_norm) + br * x_norm
+        ambient_canvas = (top_edge * (1.0 - y_norm) + bot_edge * y_norm).astype(np.float32)
 
-        # 1. HORIZONTAL EXTENSION (WINGS)
-        if pad_left > 0 or pad_right > 0:
-            if pad_left > 0:
-                strip_w = max(8, min(36, max_left_strip))
-                left_strip = placed_np[:, :strip_w, :]
+        canvas_f = ambient_canvas.copy()
 
-                # Seamless reflection of ONLY the outermost thin edge background strip
-                left_padded = cv2.copyMakeBorder(left_strip, 0, 0, pad_left, 0, cv2.BORDER_REFLECT_101)[:, :pad_left, :]
+        # 1. HORIZONTAL EXTENSION (WINGS) - Non-oscillating monotonic boundary diffusion
+        # Eliminates repeated zigzag patterns and barcode stripes by smoothly diffusing the boundary pixels
+        if pad_left > 0:
+            left_col = placed_np[:, 0, :].astype(np.float32)
+            left_ext = np.repeat(left_col[:, None, :], pad_left, axis=1)
+            kw = max(3, (pad_left // 8) * 2 + 1)
+            kh = max(3, (placed_h // 20) * 2 + 1)
+            left_ext_smooth = cv2.GaussianBlur(left_ext, (kw, kh), 0)
 
-                # 2D Multi-scale atmospheric diffusion (completely eliminates horizontal barcode stripes)
-                kw = max(31, (pad_left // 6) | 1)
-                kh = max(31, (target_h // 20) | 1)
-                diffused = cv2.GaussianBlur(left_padded, (kw, kh), 0)
+            # Monotonic cubic smoothstep: 0 at outer canvas edge, 1 at placed image boundary
+            w = np.linspace(0.0, 1.0, pad_left, dtype=np.float32)[None, :, None]
+            w_blend = w ** 2 * (3.0 - 2.0 * w)
+            wing_left = ambient_canvas[offset_y:offset_y + placed_h, :pad_left] * (1.0 - w_blend) + left_ext_smooth * w_blend
+            canvas_f[offset_y:offset_y + placed_h, :pad_left] = wing_left
 
-                dist_map = np.linspace(1.0, 0.0, pad_left, dtype=np.float32)
-                w_blend = (dist_map ** 2 * (3.0 - 2.0 * dist_map))[None, :, None]
+        if pad_right > 0:
+            right_col = placed_np[:, -1, :].astype(np.float32)
+            right_ext = np.repeat(right_col[:, None, :], pad_right, axis=1)
+            kw = max(3, (pad_right // 8) * 2 + 1)
+            kh = max(3, (placed_h // 20) * 2 + 1)
+            right_ext_smooth = cv2.GaussianBlur(right_ext, (kw, kh), 0)
 
-                left_wing = (
-                    left_padded.astype(np.float32) * (1.0 - w_blend * 0.90) +
-                    diffused.astype(np.float32) * (w_blend * 0.90)
-                )
+            w = np.linspace(1.0, 0.0, pad_right, dtype=np.float32)[None, :, None]
+            w_blend = w ** 2 * (3.0 - 2.0 * w)
+            wing_right = ambient_canvas[offset_y:offset_y + placed_h, target_w - pad_right:] * (1.0 - w_blend) + right_ext_smooth * w_blend
+            canvas_f[offset_y:offset_y + placed_h, target_w - pad_right:] = wing_right
 
-                # Micro-texture noise to eliminate flat artificial gradients
-                np.random.seed(42)
-                noise = np.random.normal(0, 1.2, left_wing.shape).astype(np.float32)
-                canvas_np[:, :pad_left] = np.clip(left_wing + noise, 0, 255).astype(np.uint8)
+        # 2. VERTICAL EXTENSION (MARGINS) - Non-oscillating monotonic boundary diffusion
+        if pad_top > 0:
+            top_row = placed_np[0, :, :].astype(np.float32)
+            top_ext = np.repeat(top_row[None, :, :], pad_top, axis=0)
+            kw = max(3, (placed_w // 20) * 2 + 1)
+            kh = max(3, (pad_top // 8) * 2 + 1)
+            top_ext_smooth = cv2.GaussianBlur(top_ext, (kw, kh), 0)
 
-            if pad_right > 0:
-                strip_w = max(8, min(36, max_right_strip))
-                right_strip = placed_np[:, -strip_w:, :]
+            w = np.linspace(0.0, 1.0, pad_top, dtype=np.float32)[:, None, None]
+            w_blend = w ** 2 * (3.0 - 2.0 * w)
+            margin_top = ambient_canvas[:pad_top, offset_x:offset_x + placed_w] * (1.0 - w_blend) + top_ext_smooth * w_blend
+            canvas_f[:pad_top, offset_x:offset_x + placed_w] = margin_top
 
-                right_padded = cv2.copyMakeBorder(right_strip, 0, 0, 0, pad_right, cv2.BORDER_REFLECT_101)[:, strip_w:strip_w + pad_right, :]
+        if pad_bottom > 0:
+            bot_row = placed_np[-1, :, :].astype(np.float32)
+            bot_ext = np.repeat(bot_row[None, :, :], pad_bottom, axis=0)
+            kw = max(3, (placed_w // 20) * 2 + 1)
+            kh = max(3, (pad_bottom // 8) * 2 + 1)
+            bot_ext_smooth = cv2.GaussianBlur(bot_ext, (kw, kh), 0)
 
-                kw = max(31, (pad_right // 6) | 1)
-                kh = max(31, (target_h // 20) | 1)
-                diffused = cv2.GaussianBlur(right_padded, (kw, kh), 0)
+            w = np.linspace(1.0, 0.0, pad_bottom, dtype=np.float32)[:, None, None]
+            w_blend = w ** 2 * (3.0 - 2.0 * w)
+            margin_bot = ambient_canvas[target_h - pad_bottom:, offset_x:offset_x + placed_w] * (1.0 - w_blend) + bot_ext_smooth * w_blend
+            canvas_f[target_h - pad_bottom:, offset_x:offset_x + placed_w] = margin_bot
 
-                dist_map = np.linspace(0.0, 1.0, pad_right, dtype=np.float32)
-                w_blend = (dist_map ** 2 * (3.0 - 2.0 * dist_map))[None, :, None]
-
-                right_wing = (
-                    right_padded.astype(np.float32) * (1.0 - w_blend * 0.90) +
-                    diffused.astype(np.float32) * (w_blend * 0.90)
-                )
-
-                np.random.seed(43)
-                noise = np.random.normal(0, 1.2, right_wing.shape).astype(np.float32)
-                canvas_np[:, target_w - pad_right:] = np.clip(right_wing + noise, 0, 255).astype(np.uint8)
-
-        # 2. VERTICAL EXTENSION (MARGINS)
-        if pad_top > 0 or pad_bottom > 0:
-            if pad_top > 0:
-                strip_h = max(8, min(36, max_top_strip))
-                top_strip = placed_np[:strip_h, :, :]
-
-                top_padded = cv2.copyMakeBorder(top_strip, pad_top, 0, 0, 0, cv2.BORDER_REFLECT_101)[:pad_top, :, :]
-
-                kw = max(31, (target_w // 20) | 1)
-                kh = max(31, (pad_top // 6) | 1)
-                diffused = cv2.GaussianBlur(top_padded, (kw, kh), 0)
-
-                dist_map = np.linspace(1.0, 0.0, pad_top, dtype=np.float32)
-                w_blend = (dist_map ** 2 * (3.0 - 2.0 * dist_map))[:, None, None]
-
-                top_wing = (
-                    top_padded.astype(np.float32) * (1.0 - w_blend * 0.90) +
-                    diffused.astype(np.float32) * (w_blend * 0.90)
-                )
-                canvas_np[:pad_top, :] = np.clip(top_wing, 0, 255).astype(np.uint8)
-
-            if pad_bottom > 0:
-                strip_h = max(8, min(36, max_bot_strip))
-                bot_strip = placed_np[-strip_h:, :, :]
-
-                bot_padded = cv2.copyMakeBorder(bot_strip, 0, pad_bottom, 0, 0, cv2.BORDER_REFLECT_101)[strip_h:strip_h + pad_bottom, :, :]
-
-                kw = max(31, (target_w // 20) | 1)
-                kh = max(31, (pad_bottom // 6) | 1)
-                diffused = cv2.GaussianBlur(bot_padded, (kw, kh), 0)
-
-                dist_map = np.linspace(0.0, 1.0, pad_bottom, dtype=np.float32)
-                w_blend = (dist_map ** 2 * (3.0 - 2.0 * dist_map))[:, None, None]
-
-                bot_wing = (
-                    bot_padded.astype(np.float32) * (1.0 - w_blend * 0.90) +
-                    diffused.astype(np.float32) * (w_blend * 0.90)
-                )
-                canvas_np[target_h - pad_bottom:, :] = np.clip(bot_wing, 0, 255).astype(np.uint8)
+        canvas_np = np.clip(canvas_f, 0, 255).astype(np.uint8)
 
     # 3. COMPOSITE PRISTINE ORIGINAL PIXELS
     canvas_np[offset_y:offset_y + placed_h, offset_x:offset_x + placed_w] = placed_np
@@ -801,7 +764,7 @@ def expand_background_ai(
                 "canvas_size": [target_w, target_h],
                 "placed_box": [ox, oy, ox + pw, oy + ph],
                 "product_preserved": True,
-                "error_message": gen_err or ("Generated using Studio adaptive background extension." if not is_groq else "Generated using Groq Vision-assisted background extension."),
+                "error_message": gen_err or "Standard/OpenCV Fallback — Not AI Enhanced. Configure OPENAI_API_KEY in backend/.env for genuine AI outpainting.",
                 "vision_info": vision_info,
             }
 

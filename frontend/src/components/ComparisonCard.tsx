@@ -102,14 +102,14 @@ export const ComparisonCard: React.FC<ComparisonCardProps> = ({
               </span>
             )}
             {isAI && status === 'fallback' && (
-              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-sky-100 text-sky-800 border border-sky-200">
-                OpenCV Fallback
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-amber-100 text-amber-800 border border-amber-200">
+                Standard/OpenCV Fallback — Not AI Enhanced
               </span>
             )}
             {isAI && status === 'ready' && (
               <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1">
                 <Check className="w-3 h-3" />
-                <span>{item.is_generative_ai ? 'AI Outpainted' : 'AI Enhanced'}</span>
+                <span>AI Enhanced</span>
               </span>
             )}
           </div>
@@ -117,8 +117,8 @@ export const ComparisonCard: React.FC<ComparisonCardProps> = ({
           <p className="text-xs text-slate-500">
             {isAI
               ? (item.is_generative_ai
-                  ? 'Maintains natural proportions; real generative AI outpainted background.'
-                  : 'Maintains natural proportions; Groq Vision-assisted background continuation.')
+                  ? 'Maintains natural proportions; genuine generative AI outpainted background.'
+                  : 'Standard/OpenCV fallback — non-AI canvas extension. Configure OPENAI_API_KEY in backend/.env for genuine AI outpainting.')
               : item.mode === 'safe_fit'
               ? 'Safe Fit (contain). 100% original content preserved without distortion.'
               : item.mode === 'smart_crop'
@@ -157,6 +157,16 @@ export const ComparisonCard: React.FC<ComparisonCardProps> = ({
           {activeWidth} × {activeHeight} px
         </span>
       </div>
+
+      {/* Fallback configuration guidance */}
+      {isAI && status === 'fallback' && (
+        <div className="px-4 py-2 bg-amber-50/80 border-b border-amber-200/60 flex items-start gap-2 text-[11px] text-amber-900 leading-tight">
+          <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+          <span>
+            <strong className="font-semibold">Standard/OpenCV Fallback:</strong> Classical canvas extension used. Configure <code className="bg-amber-100/80 px-1 py-0.5 rounded font-mono text-[10px]">OPENAI_API_KEY</code> in <code className="bg-amber-100/80 px-1 py-0.5 rounded font-mono text-[10px]">backend/.env</code> for genuine AI outpainting.
+          </span>
+        </div>
+      )}
 
       {/* Preview Area or Unavailable State */}
       <div className="relative min-h-[260px] h-[280px] w-full bg-slate-100/70 p-4 flex items-center justify-center overflow-hidden select-none">
@@ -201,7 +211,7 @@ export const ComparisonCard: React.FC<ComparisonCardProps> = ({
               </h5>
               <p className="text-xs text-slate-500 mt-1 leading-relaxed">
                 {item.error_message ||
-                  'Configure GROQ_API_KEY in backend/.env to enable AI background expansion.'}
+                  'Configure OPENAI_API_KEY in backend/.env to enable genuine AI background expansion (DALL-E 2 Inpainting).'}
               </p>
             </div>
             <div className="pt-1">
