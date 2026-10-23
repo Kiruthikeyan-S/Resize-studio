@@ -624,7 +624,13 @@ def generate_comparison_pipeline(
     all_variants = []
     comparison_rows = []
 
+    # Pre-analyze scene composition with Groq Vision once for all ratios
     groq_cached_analysis = None
+    try:
+        from services.groq_vision import analyze_scene_for_background_expansion
+        groq_cached_analysis = analyze_scene_for_background_expansion(orig_path)
+    except Exception:
+        groq_cached_analysis = None
     gemini_fail_fast_err = None
 
     with Image.open(orig_path) as source_img:
@@ -743,207 +749,111 @@ def generate_comparison_pipeline(
             standard_outputs.append(std_output_item)
 
             # ==========================================
-            # 2. METHOD B: GEMINI AI IMAGE EDITING
+            # 2. METHOD B: GROQ-ASSISTED AI BACKGROUND EXTENSION
             # ==========================================
-            if gemini_fail_fast_err:
-                gemini_img = None
-                gemini_meta = {
-                    "status": "failed",
-                    "provider": "gemini",
-                    "error_message": gemini_fail_fast_err,
-                }
-            else:
-                gemini_img, gemini_meta = expand_background_gemini(
-                    source_img, tw, th, prompt_hint=prompt_hint
-                )
-                if gemini_img is None and "429" in str(gemini_meta.get("error_message", "")):
-                    gemini_fail_fast_err = gemini_meta["error_message"]
-
-            gemini_status = gemini_meta.get("status", "failed")
-            gemini_provider = gemini_meta.get("provider", "gemini")
-            gemini_err = gemini_meta.get("error_message")
-
-            gemini_variants = []
-            gemini_large_file = None
-            gemini_large_size = 0
-
-            if gemini_img is not None:
-                if sharpen:
-                    gemini_img = apply_mild_sharpening(gemini_img)
-                if denoise:
-                    gemini_img = apply_mild_denoising(gemini_img)
-
-                if is_transparent and export_format in ["png", "webp"]:
-                    gemini_img = gemini_img.convert("RGBA")
-                else:
-                    gemini_img = handle_alpha_transparency(gemini_img, target_format=export_format, bg_color_hex=bg_color_hex)
-
-                gemini_large_file = os.path.join(gemini_ratio_dir, f"large.{ext}")
-                gemini_img.save(gemini_large_file, format=export_format.upper(), **save_kwargs)
-                gemini_large_size = os.path.getsize(gemini_large_file)
-
-                # Copy to backward-compatible ai directory
-                shutil.copyfile(gemini_large_file, os.path.join(ai_ratio_dir, f"large.{ext}"))
-
-                # Gemini Variants (Large, Medium, Small)
-                for size_key in SIZE_KEYS:
-                    vw, vh = SIZE_PRESETS[safe_key][size_key]
-                    v_img = gemini_img if gemini_img.size == (vw, vh) else gemini_img.resize((vw, vh), resample=Image.Resampling.LANCZOS)
-                    v_path = os.path.join(gemini_ratio_dir, f"{size_key}.{ext}")
-                    v_img.save(v_path, format=export_format.upper(), **save_kwargs)
-                    shutil.copyfile(v_path, os.path.join(ai_ratio_dir, f"{size_key}.{ext}"))
-
-                    var_item = {
-                        "selection_id": f"gemini:{safe_key}:{size_key}",
-                        "method": "gemini",
-                        "ratio_safe_key": safe_key,
-                        "ratio_name": config["name"],
-                        "size_key": size_key,
-                        "size_label": SIZE_LABELS[size_key],
-                        "width": vw,
-                        "height": vh,
-                        "file_name": f"gemini_{safe_key}_{size_key}.{ext}",
-                        "file_path": v_path,
-                        "file_size": os.path.getsize(v_path),
-                        "status": "ready",
-                    }
-                    gemini_variants.append(var_item)
-                    all_variants.append(var_item)
-
-                # Gemini Thumbnail
-                gemini_thumb = gemini_img.resize((th_w, th_h), resample=Image.Resampling.LANCZOS)
-                gemini_thumb_path = os.path.join(gemini_ratio_dir, "thumb.webp")
-                gemini_thumb.save(gemini_thumb_path, format="WEBP", quality=88)
-                shutil.copyfile(gemini_thumb_path, os.path.join(ai_ratio_dir, "thumb.webp"))
-            else:
-                for size_key in SIZE_KEYS:
-                    vw, vh = SIZE_PRESETS[safe_key][size_key]
-                    var_item = {
-                        "selection_id": f"gemini:{safe_key}:{size_key}",
-                        "method": "gemini",
-                        "ratio_safe_key": safe_key,
-                        "ratio_name": config["name"],
-                        "size_key": size_key,
-                        "size_label": SIZE_LABELS[size_key],
-                        "width": vw,
-                        "height": vh,
-                        "file_name": f"gemini_{safe_key}_{size_key}.{ext}",
-                        "file_path": None,
-                        "file_size": 0,
-                        "status": gemini_status,
-                    }
-                    gemini_variants.append(var_item)
-                    all_variants.append(var_item)
-
-            gemini_output_item = {
-                "method": "gemini",
-                "ratio_key": ratio_key,
-                "safe_key": safe_key,
-                "legacy_key": config.get("legacy_key"),
-                "name": config["name"],
-                "width": tw,
-                "height": th,
-                "orientation": config["orientation"],
-                "file_name": f"gemini_{safe_key}_large.{ext}",
-                "file_size": gemini_large_size,
-                "file_path": gemini_large_file,
-                "version": revision,
-                "preview_url": f"/api/preview/{image_id}/{safe_key}?method=gemini&v={revision}",
-                "download_url": f"/api/download/{image_id}/{safe_key}?method=gemini",
-                "source_url": f"/api/original/{image_id}",
-                "source_width": orig_w,
-                "source_height": orig_h,
-                "crop_box": [0, 0, orig_w, orig_h],
-                "mode": "gemini_expand",
-                "status": gemini_status,
-                "provider": gemini_provider,
-                "error_message": gemini_err,
-                "variants": gemini_variants,
-            }
-            gemini_outputs.append(gemini_output_item)
-
-            # ==========================================
-            # 3. METHOD C: GROQ-ASSISTED IMAGE PROCESSING
-            # ==========================================
-            groq_img, groq_meta = expand_background_groq(
-                source_img, tw, th, prompt_hint=prompt_hint, cached_analysis=groq_cached_analysis
+            ai_img, ai_meta = expand_background_groq(
+                img=source_img,
+                target_w=tw,
+                target_h=th,
+                prompt_hint=prompt_hint,
+                cached_analysis=groq_cached_analysis,
+                bg_color_hex=bg_color_hex,
+                is_transparent=is_transparent,
+                allow_opencv_fallback=allow_opencv_fallback,
             )
-            if groq_img is not None and groq_cached_analysis is None and groq_meta.get("analysis"):
-                groq_cached_analysis = groq_meta["analysis"]
+            if ai_img is not None and groq_cached_analysis is None and ai_meta.get("analysis"):
+                groq_cached_analysis = ai_meta["analysis"]
 
-            groq_status = groq_meta.get("status", "failed")
-            groq_provider = groq_meta.get("provider", "groq")
-            groq_err = groq_meta.get("error_message")
+            ai_status = ai_meta.get("status", "failed")
+            ai_provider = ai_meta.get("provider", "groq_vision")
+            ai_err = ai_meta.get("error_message")
 
-            groq_variants = []
-            groq_large_file = None
-            groq_large_size = 0
+            ai_variants = []
+            ai_large_file = None
+            ai_large_size = 0
 
-            if groq_img is not None:
+            if ai_img is not None:
                 if sharpen:
-                    groq_img = apply_mild_sharpening(groq_img)
+                    ai_img = apply_mild_sharpening(ai_img)
                 if denoise:
-                    groq_img = apply_mild_denoising(groq_img)
+                    ai_img = apply_mild_denoising(ai_img)
 
                 if is_transparent and export_format in ["png", "webp"]:
-                    groq_img = groq_img.convert("RGBA")
+                    ai_img = ai_img.convert("RGBA")
                 else:
-                    groq_img = handle_alpha_transparency(groq_img, target_format=export_format, bg_color_hex=bg_color_hex)
+                    ai_img = handle_alpha_transparency(ai_img, target_format=export_format, bg_color_hex=bg_color_hex)
 
+                ai_large_file = os.path.join(ai_ratio_dir, f"large.{ext}")
+                ai_img.save(ai_large_file, format=export_format.upper(), **save_kwargs)
+                ai_large_size = os.path.getsize(ai_large_file)
+
+                # Also save to groq and gemini ratio directories for backward compatibility
                 groq_large_file = os.path.join(groq_ratio_dir, f"large.{ext}")
-                groq_img.save(groq_large_file, format=export_format.upper(), **save_kwargs)
-                groq_large_size = os.path.getsize(groq_large_file)
+                gemini_large_file = os.path.join(gemini_ratio_dir, f"large.{ext}")
+                shutil.copyfile(ai_large_file, groq_large_file)
+                shutil.copyfile(ai_large_file, gemini_large_file)
 
-                # Groq Variants (Large, Medium, Small)
+                # Method B Variants (Large, Medium, Small)
                 for size_key in SIZE_KEYS:
                     vw, vh = SIZE_PRESETS[safe_key][size_key]
-                    v_img = groq_img if groq_img.size == (vw, vh) else groq_img.resize((vw, vh), resample=Image.Resampling.LANCZOS)
-                    v_path = os.path.join(groq_ratio_dir, f"{size_key}.{ext}")
+                    v_img = ai_img if ai_img.size == (vw, vh) else ai_img.resize((vw, vh), resample=Image.Resampling.LANCZOS)
+                    v_path = os.path.join(ai_ratio_dir, f"{size_key}.{ext}")
                     v_img.save(v_path, format=export_format.upper(), **save_kwargs)
+                    shutil.copyfile(v_path, os.path.join(groq_ratio_dir, f"{size_key}.{ext}"))
+                    shutil.copyfile(v_path, os.path.join(gemini_ratio_dir, f"{size_key}.{ext}"))
 
-                    var_item = {
-                        "selection_id": f"groq:{safe_key}:{size_key}",
-                        "method": "groq",
+                    var_item_ai = {
+                        "selection_id": f"ai:{safe_key}:{size_key}",
+                        "method": "ai",
                         "ratio_safe_key": safe_key,
                         "ratio_name": config["name"],
                         "size_key": size_key,
                         "size_label": SIZE_LABELS[size_key],
                         "width": vw,
                         "height": vh,
-                        "file_name": f"groq_{safe_key}_{size_key}.{ext}",
+                        "file_name": f"ai_{safe_key}_{size_key}.{ext}",
                         "file_path": v_path,
                         "file_size": os.path.getsize(v_path),
                         "status": "ready",
                     }
-                    groq_variants.append(var_item)
-                    all_variants.append(var_item)
+                    ai_variants.append(var_item_ai)
+                    all_variants.append(var_item_ai)
 
-                # Groq Thumbnail
-                groq_thumb = groq_img.resize((th_w, th_h), resample=Image.Resampling.LANCZOS)
-                groq_thumb_path = os.path.join(groq_ratio_dir, "thumb.webp")
-                groq_thumb.save(groq_thumb_path, format="WEBP", quality=88)
+                    # Also add groq variant ID so UI downloads with groq selection succeed
+                    var_item_groq = dict(var_item_ai)
+                    var_item_groq["selection_id"] = f"groq:{safe_key}:{size_key}"
+                    var_item_groq["method"] = "groq"
+                    var_item_groq["file_name"] = f"groq_{safe_key}_{size_key}.{ext}"
+                    all_variants.append(var_item_groq)
+
+                # Thumbnail for preview
+                ai_thumb = ai_img.resize((th_w, th_h), resample=Image.Resampling.LANCZOS)
+                ai_thumb_path = os.path.join(ai_ratio_dir, "thumb.webp")
+                ai_thumb.save(ai_thumb_path, format="WEBP", quality=88)
+                shutil.copyfile(ai_thumb_path, os.path.join(groq_ratio_dir, "thumb.webp"))
+                shutil.copyfile(ai_thumb_path, os.path.join(gemini_ratio_dir, "thumb.webp"))
             else:
                 for size_key in SIZE_KEYS:
                     vw, vh = SIZE_PRESETS[safe_key][size_key]
                     var_item = {
-                        "selection_id": f"groq:{safe_key}:{size_key}",
-                        "method": "groq",
+                        "selection_id": f"ai:{safe_key}:{size_key}",
+                        "method": "ai",
                         "ratio_safe_key": safe_key,
                         "ratio_name": config["name"],
                         "size_key": size_key,
                         "size_label": SIZE_LABELS[size_key],
                         "width": vw,
                         "height": vh,
-                        "file_name": f"groq_{safe_key}_{size_key}.{ext}",
+                        "file_name": f"ai_{safe_key}_{size_key}.{ext}",
                         "file_path": None,
                         "file_size": 0,
-                        "status": groq_status,
+                        "status": ai_status,
                     }
-                    groq_variants.append(var_item)
+                    ai_variants.append(var_item)
                     all_variants.append(var_item)
 
-            groq_output_item = {
-                "method": "groq",
+            ai_output_item = {
+                "method": "ai",
                 "ratio_key": ratio_key,
                 "safe_key": safe_key,
                 "legacy_key": config.get("legacy_key"),
@@ -951,35 +861,35 @@ def generate_comparison_pipeline(
                 "width": tw,
                 "height": th,
                 "orientation": config["orientation"],
-                "file_name": f"groq_{safe_key}_large.{ext}",
-                "file_size": groq_large_size,
-                "file_path": groq_large_file,
+                "file_name": f"ai_{safe_key}_large.{ext}",
+                "file_size": ai_large_size,
+                "file_path": ai_large_file,
                 "version": revision,
-                "preview_url": f"/api/preview/{image_id}/{safe_key}?method=groq&v={revision}",
-                "download_url": f"/api/download/{image_id}/{safe_key}?method=groq",
+                "preview_url": f"/api/preview/{image_id}/{safe_key}?method=ai&v={revision}",
+                "download_url": f"/api/download/{image_id}/{safe_key}?method=ai",
                 "source_url": f"/api/original/{image_id}",
                 "source_width": orig_w,
                 "source_height": orig_h,
                 "crop_box": [0, 0, orig_w, orig_h],
-                "mode": "groq_assisted",
-                "status": groq_status,
-                "provider": groq_provider,
-                "error_message": groq_err,
-                "variants": groq_variants,
+                "mode": "ai_expand",
+                "status": ai_status,
+                "provider": ai_provider,
+                "error_message": ai_err,
+                "variants": ai_variants,
             }
-            groq_outputs.append(groq_output_item)
-
-            # Backward-compatible AI Output Item
-            primary_ai_output = gemini_output_item if gemini_output_item["status"] == "ready" else (
-                groq_output_item if groq_output_item["status"] == "ready" else gemini_output_item
-            )
-            ai_output_item = dict(primary_ai_output)
-            ai_output_item["method"] = "ai"
-            ai_output_item["preview_url"] = f"/api/preview/{image_id}/{safe_key}?method=ai&v={revision}"
-            ai_output_item["download_url"] = f"/api/download/{image_id}/{safe_key}?method=ai"
             ai_outputs.append(ai_output_item)
 
-            # Comparison Row with all three independent methods
+            groq_output_item = dict(ai_output_item)
+            groq_output_item["method"] = "groq"
+            groq_output_item["preview_url"] = f"/api/preview/{image_id}/{safe_key}?method=groq&v={revision}"
+            groq_output_item["download_url"] = f"/api/download/{image_id}/{safe_key}?method=groq"
+            groq_outputs.append(groq_output_item)
+
+            gemini_output_item = dict(ai_output_item)
+            gemini_output_item["method"] = "gemini"
+            gemini_outputs.append(gemini_output_item)
+
+            # Comparison Row with Method A (Standard) and Method B (AI)
             comparison_rows.append({
                 "safe_key": safe_key,
                 "ratio_key": ratio_key,
@@ -995,17 +905,13 @@ def generate_comparison_pipeline(
             })
 
     # Overall statuses
-    overall_gemini_status = (
-        "ready" if any(item.get("status") == "ready" for item in gemini_outputs)
-        else ("failed" if any(item.get("status") == "failed" for item in gemini_outputs) else "unavailable")
+    overall_ai_status = (
+        "ready" if any(item.get("status") == "ready" for item in ai_outputs)
+        else ("fallback" if any(item.get("status") == "fallback" for item in ai_outputs)
+        else ("failed" if any(item.get("status") == "failed" for item in ai_outputs) else "unavailable"))
     )
-    overall_gemini_message = next((item.get("error_message") for item in gemini_outputs if item.get("error_message")), None)
-
-    overall_groq_status = (
-        "ready" if any(item.get("status") == "ready" for item in groq_outputs)
-        else ("failed" if any(item.get("status") == "failed" for item in groq_outputs) else "unavailable")
-    )
-    overall_groq_message = next((item.get("error_message") for item in groq_outputs if item.get("error_message")), None)
+    overall_ai_message = next((item.get("error_message") for item in ai_outputs if item.get("error_message")), None)
+    overall_ai_provider = next((item.get("provider") for item in ai_outputs if item.get("provider")), "groq_vision")
 
     session_data = {
         "image_id": image_id,
@@ -1021,22 +927,22 @@ def generate_comparison_pipeline(
             "outputs": standard_outputs,
         },
         "gemini": {
-            "status": overall_gemini_status,
-            "provider": "gemini" if os.environ.get("GEMINI_API_KEY") else None,
-            "error_message": overall_gemini_message,
+            "status": overall_ai_status,
+            "provider": overall_ai_provider,
+            "error_message": overall_ai_message,
             "outputs": gemini_outputs,
         },
         "groq": {
-            "status": overall_groq_status,
-            "provider": "groq" if os.environ.get("GROQ_API_KEY") else None,
-            "error_message": overall_groq_message,
+            "status": overall_ai_status,
+            "provider": overall_ai_provider,
+            "error_message": overall_ai_message,
             "outputs": groq_outputs,
         },
         "ai": {
-            "status": overall_gemini_status if overall_gemini_status == "ready" else overall_groq_status,
-            "provider": "gemini" if overall_gemini_status == "ready" else ("groq" if overall_groq_status == "ready" else "gemini"),
-            "error_message": overall_gemini_message if overall_gemini_status != "ready" else None,
-            "outputs": gemini_outputs if overall_gemini_status == "ready" else groq_outputs,
+            "status": overall_ai_status,
+            "provider": overall_ai_provider,
+            "error_message": overall_ai_message,
+            "outputs": ai_outputs,
         },
         "rows": comparison_rows,
         "outputs": standard_outputs,
