@@ -90,6 +90,7 @@ class OutputRatioItem(BaseModel):
     status: Optional[str] = "ready"
     provider: Optional[str] = None
     error_message: Optional[str] = None
+    is_generative_ai: Optional[bool] = False
     edges_trimmed: Optional[bool] = False
     fit_info: Optional[FitInfoItem] = None
     fallback_reason: Optional[str] = None
@@ -131,6 +132,7 @@ class ConvertComparisonResponse(BaseModel):
     ai_status: str
     ai_provider: Optional[str] = None
     ai_message: Optional[str] = None
+    ai_is_generative: Optional[bool] = False
     gemini_status: Optional[str] = None
     gemini_provider: Optional[str] = None
     gemini_message: Optional[str] = None
@@ -272,6 +274,7 @@ async def convert_comparison_endpoint(payload: ConvertComparisonRequest):
         ai_status=results.get("ai", {}).get("status", "ready"),
         ai_provider=results.get("ai", {}).get("provider"),
         ai_message=results.get("ai", {}).get("error_message"),
+        ai_is_generative=results.get("ai", {}).get("is_generative_ai", False),
         gemini_status=results.get("gemini", {}).get("status"),
         gemini_provider=results.get("gemini", {}).get("provider"),
         gemini_message=results.get("gemini", {}).get("error_message"),

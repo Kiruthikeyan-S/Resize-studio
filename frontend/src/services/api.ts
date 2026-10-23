@@ -67,6 +67,7 @@ export interface RatioOutput {
   edges_trimmed?: boolean;
   fit_info?: FitInfo;
   fallback_reason?: string;
+  is_generative_ai?: boolean;
   variants?: OutputVariant[];
 }
 
@@ -120,6 +121,7 @@ export interface ConvertComparisonResponse {
   ai_status: 'ready' | 'unavailable' | 'failed' | 'fallback';
   ai_provider?: string;
   ai_message?: string;
+  ai_is_generative?: boolean;
   gemini_status?: 'ready' | 'unavailable' | 'failed' | 'fallback';
   gemini_provider?: string;
   gemini_message?: string;

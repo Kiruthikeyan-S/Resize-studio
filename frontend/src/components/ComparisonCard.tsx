@@ -109,14 +109,16 @@ export const ComparisonCard: React.FC<ComparisonCardProps> = ({
             {isAI && status === 'ready' && (
               <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1">
                 <Check className="w-3 h-3" />
-                <span>AI Generated</span>
+                <span>{item.is_generative_ai ? 'AI Outpainted' : 'AI Enhanced'}</span>
               </span>
             )}
           </div>
 
           <p className="text-xs text-slate-500">
             {isAI
-              ? 'Maintains natural product proportions; outpainted background.'
+              ? (item.is_generative_ai
+                  ? 'Maintains natural proportions; real generative AI outpainted background.'
+                  : 'Maintains natural proportions; Groq Vision-assisted background continuation.')
               : item.mode === 'safe_fit'
               ? 'Safe Fit (contain). 100% original content preserved without distortion.'
               : item.mode === 'smart_crop'

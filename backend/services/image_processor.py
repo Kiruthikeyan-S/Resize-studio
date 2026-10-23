@@ -767,6 +767,7 @@ def generate_comparison_pipeline(
             ai_status = ai_meta.get("status", "failed")
             ai_provider = ai_meta.get("provider", "groq_vision")
             ai_err = ai_meta.get("error_message")
+            ai_is_gen = ai_meta.get("is_generative_ai", False)
 
             ai_variants = []
             ai_large_file = None
@@ -875,6 +876,7 @@ def generate_comparison_pipeline(
                 "status": ai_status,
                 "provider": ai_provider,
                 "error_message": ai_err,
+                "is_generative_ai": ai_is_gen,
                 "variants": ai_variants,
             }
             ai_outputs.append(ai_output_item)
@@ -942,6 +944,7 @@ def generate_comparison_pipeline(
             "status": overall_ai_status,
             "provider": overall_ai_provider,
             "error_message": overall_ai_message,
+            "is_generative_ai": any(item.get("is_generative_ai", False) for item in ai_outputs),
             "outputs": ai_outputs,
         },
         "rows": comparison_rows,
