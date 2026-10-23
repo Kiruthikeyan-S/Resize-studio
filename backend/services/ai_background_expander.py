@@ -94,85 +94,117 @@ def studio_texture_background_expansion(
     offset_x: int,
     offset_y: int,
     expansion_type: str,
-    bg_color_hex: str = "#F8FAFC"
+    bg_color_hex: str = "#F8FAFC",
+    is_transparent: bool = False
 ) -> Image.Image:
     """
-    Deterministic offline studio background expansion using edge texture replication,
-    gradient continuation, and OpenCV inpainting.
-    Composites untouched source pixels back on top so product details are 100% preserved.
+    Seamless high-fidelity background expansion:
+    1. For Studio/Product/Graphic images: Automatically identifies dominant perimeter
+       background color and extends a spotless matching studio canvas without streaks,
+       scanlines, or repeating pixel artifacts.
+    2. For Complex Scenery/Photographs: Extends atmospheric horizon, sky, and terrain
+       smoothly using border-isolated 2D diffusion without duplicating the central subject.
+    3. Re-composites pristine untouched source pixels with 100% opacity to eliminate
+       dark/grey border line artifacts.
     """
-    placed_img = img_rgb.resize((placed_w, placed_h), resample=Image.Resampling.LANCZOS)
+    is_rgba = (img_rgb.mode == "RGBA")
+    if is_transparent and is_rgba:
+        placed_img = img_rgb.resize((placed_w, placed_h), resample=Image.Resampling.LANCZOS)
+        canvas = Image.new("RGBA", (target_w, target_h), (0, 0, 0, 0))
+        canvas.paste(placed_img, (offset_x, offset_y), mask=placed_img.split()[-1])
+        return canvas
+
+    clean_img = img_rgb.convert("RGB")
+    placed_img = clean_img.resize((placed_w, placed_h), resample=Image.Resampling.LANCZOS)
     placed_np = np.array(placed_img)
 
-    canvas_np = np.zeros((target_h, target_w, 3), dtype=np.uint8)
-    edge_strip = max(4, min(32, min(placed_w, placed_h) // 10))
+    pad_top = max(0, offset_y)
+    pad_bottom = max(0, target_h - offset_y - placed_h)
+    pad_left = max(0, offset_x)
+    pad_right = max(0, target_w - offset_x - placed_w)
 
-    if expansion_type == "horizontal":
-        left_strip = placed_np[:, :edge_strip, :]
-        right_strip = placed_np[:, -edge_strip:, :]
-
-        left_profile = np.mean(left_strip, axis=1, keepdims=True).astype(np.uint8)
-        right_profile = np.mean(right_strip, axis=1, keepdims=True).astype(np.uint8)
-
-        if offset_x > 0:
-            canvas_np[:, :offset_x, :] = np.repeat(left_profile, offset_x, axis=1)
-        right_start = offset_x + placed_w
-        if right_start < target_w:
-            rem_w = target_w - right_start
-            canvas_np[:, right_start:, :] = np.repeat(right_profile, rem_w, axis=1)
-
-        canvas_np[:, offset_x:offset_x + placed_w, :] = placed_np
-
-        mask = np.zeros((target_h, target_w), dtype=np.uint8)
-        seam_width = max(3, edge_strip // 2)
-        if offset_x > 0:
-            mask[:, max(0, offset_x - seam_width):offset_x + seam_width] = 255
-        if right_start < target_w:
-            mask[:, max(0, right_start - seam_width):min(target_w, right_start + seam_width)] = 255
-
-        bgr = cv2.cvtColor(canvas_np, cv2.COLOR_RGB2BGR)
-        blended_bgr = cv2.inpaint(bgr, mask, inpaintRadius=seam_width, flags=cv2.INPAINT_TELEA)
-        canvas_np = cv2.cvtColor(blended_bgr, cv2.COLOR_BGR2RGB)
-
-    elif expansion_type == "vertical":
-        top_strip = placed_np[:edge_strip, :, :]
-        bot_strip = placed_np[-edge_strip:, :, :]
-
-        top_profile = np.mean(top_strip, axis=0, keepdims=True).astype(np.uint8)
-        bot_profile = np.mean(bot_strip, axis=0, keepdims=True).astype(np.uint8)
-
-        if offset_y > 0:
-            canvas_np[:offset_y, :, :] = np.repeat(top_profile, offset_y, axis=0)
-        bot_start = offset_y + placed_h
-        if bot_start < target_h:
-            rem_h = target_h - bot_start
-            canvas_np[bot_start:, :, :] = np.repeat(bot_profile, rem_h, axis=0)
-
-        canvas_np[offset_y:offset_y + placed_h, :, :] = placed_np
-
-        mask = np.zeros((target_h, target_w), dtype=np.uint8)
-        seam_height = max(3, edge_strip // 2)
-        if offset_y > 0:
-            mask[max(0, offset_y - seam_height):offset_y + seam_height, :] = 255
-        if bot_start < target_h:
-            mask[max(0, bot_start - seam_height):min(target_h, bot_start + seam_height), :] = 255
-
-        bgr = cv2.cvtColor(canvas_np, cv2.COLOR_RGB2BGR)
-        blended_bgr = cv2.inpaint(bgr, mask, inpaintRadius=seam_height, flags=cv2.INPAINT_TELEA)
-        canvas_np = cv2.cvtColor(blended_bgr, cv2.COLOR_BGR2RGB)
-    else:
+    if pad_top == 0 and pad_bottom == 0 and pad_left == 0 and pad_right == 0:
         return placed_img
 
-    # Strictly re-composite pristine source pixels with anti-aliased edge blend
-    result_img = Image.fromarray(canvas_np)
-    mask_im = Image.new("L", (placed_w, placed_h), 255)
-    if placed_w > 8 and placed_h > 8:
-        from PIL import ImageDraw
-        draw = ImageDraw.Draw(mask_im)
-        draw.rectangle([0, 0, placed_w - 1, placed_h - 1], outline=180, width=1)
+    # Analyze perimeter color variance to distinguish uniform studio backdrops from scenery
+    bw = max(2, min(16, min(placed_w, placed_h) // 20))
+    perim_samples = np.concatenate([
+        placed_np[:bw, :, :].reshape(-1, 3),
+        placed_np[-bw:, :, :].reshape(-1, 3),
+        placed_np[:, :bw, :].reshape(-1, 3),
+        placed_np[:, -bw:, :].reshape(-1, 3)
+    ], axis=0)
+    perim_std = float(np.mean(np.std(perim_samples.astype(np.float32), axis=0)))
+    perim_median = np.median(perim_samples, axis=0).astype(np.uint8)
 
-    result_img.paste(placed_img, (offset_x, offset_y), mask=mask_im)
-    return result_img
+    canvas_np = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+
+    custom_bg = None
+    if bg_color_hex and bg_color_hex.upper() not in ["#F8FAFC", ""]:
+        hex_clean = bg_color_hex.lstrip("#")
+        if len(hex_clean) == 6:
+            try:
+                custom_bg = tuple(int(hex_clean[i:i+2], 16) for i in (0, 2, 4))
+            except Exception:
+                custom_bg = None
+
+    if perim_std < 18.0 or custom_bg is not None:
+        fill_rgb = custom_bg if custom_bg is not None else tuple(int(c) for c in perim_median)
+        canvas_np[:, :] = fill_rgb
+        canvas_np[offset_y:offset_y + placed_h, offset_x:offset_x + placed_w] = placed_np
+    else:
+        if pad_left > 0 or pad_right > 0:
+            strip_w = max(16, min(48, placed_w // 12))
+            left_strip = placed_np[:, :strip_w, :]
+            right_strip = placed_np[:, -strip_w:, :]
+
+            if pad_left > 0:
+                left_wing = cv2.copyMakeBorder(left_strip, 0, 0, pad_left, 0, cv2.BORDER_REFLECT_101)[:, :pad_left, :]
+                k_w = max(31, (pad_left // 10) | 1)
+                k_h = max(31, (target_h // 30) | 1)
+                blur_l = cv2.GaussianBlur(left_wing, (k_w, k_h), 0)
+                dist_l = np.linspace(1.0, 0.0, pad_left, dtype=np.float32)
+                w_l = (dist_l ** 2 * (3.0 - 2.0 * dist_l))[None, :, None]
+                final_left = (left_wing.astype(np.float32) * (1.0 - w_l * 0.85) + blur_l.astype(np.float32) * (w_l * 0.85)).astype(np.uint8)
+                canvas_np[:, :pad_left] = final_left
+
+            if pad_right > 0:
+                right_wing = cv2.copyMakeBorder(right_strip, 0, 0, 0, pad_right, cv2.BORDER_REFLECT_101)[:, strip_w:strip_w + pad_right, :]
+                k_w = max(31, (pad_right // 10) | 1)
+                k_h = max(31, (target_h // 30) | 1)
+                blur_r = cv2.GaussianBlur(right_wing, (k_w, k_h), 0)
+                dist_r = np.linspace(0.0, 1.0, pad_right, dtype=np.float32)
+                w_r = (dist_r ** 2 * (3.0 - 2.0 * dist_r))[None, :, None]
+                final_right = (right_wing.astype(np.float32) * (1.0 - w_r * 0.85) + blur_r.astype(np.float32) * (w_r * 0.85)).astype(np.uint8)
+                canvas_np[:, target_w - pad_right:] = final_right
+
+        if pad_top > 0 or pad_bottom > 0:
+            strip_h = max(16, min(48, placed_h // 12))
+            top_strip = placed_np[:strip_h, :, :]
+            bot_strip = placed_np[-strip_h:, :, :]
+
+            if pad_top > 0:
+                top_wing = cv2.copyMakeBorder(top_strip, pad_top, 0, 0, 0, cv2.BORDER_REFLECT_101)[:pad_top, :, :]
+                k_w = max(31, (target_w // 30) | 1)
+                k_h = max(31, (pad_top // 10) | 1)
+                blur_t = cv2.GaussianBlur(top_wing, (k_w, k_h), 0)
+                dist_t = np.linspace(1.0, 0.0, pad_top, dtype=np.float32)
+                w_t = (dist_t ** 2 * (3.0 - 2.0 * dist_t))[:, None, None]
+                final_top = (top_wing.astype(np.float32) * (1.0 - w_t * 0.85) + blur_t.astype(np.float32) * (w_t * 0.85)).astype(np.uint8)
+                canvas_np[:pad_top, :] = final_top
+
+            if pad_bottom > 0:
+                bot_wing = cv2.copyMakeBorder(bot_strip, 0, pad_bottom, 0, 0, cv2.BORDER_REFLECT_101)[strip_h:strip_h + pad_bottom, :, :]
+                k_w = max(31, (target_w // 30) | 1)
+                k_h = max(31, (pad_bottom // 10) | 1)
+                blur_b = cv2.GaussianBlur(bot_wing, (k_w, k_h), 0)
+                dist_b = np.linspace(0.0, 1.0, pad_bottom, dtype=np.float32)
+                w_b = (dist_b ** 2 * (3.0 - 2.0 * dist_b))[:, None, None]
+                final_bot = (bot_wing.astype(np.float32) * (1.0 - w_b * 0.85) + blur_b.astype(np.float32) * (w_b * 0.85)).astype(np.uint8)
+                canvas_np[target_h - pad_bottom:, :] = final_bot
+
+    canvas_np[offset_y:offset_y + placed_h, offset_x:offset_x + placed_w] = placed_np
+    return Image.fromarray(canvas_np)
 
 
 def call_openai_image_edit(
@@ -294,7 +326,7 @@ def call_openai_image_edit(
         if final_placed_w > 8 and final_placed_h > 8:
             from PIL import ImageDraw
             draw = ImageDraw.Draw(mask_im)
-            draw.rectangle([0, 0, final_placed_w - 1, final_placed_h - 1], outline=180, width=1)
+            # Paste with 100% opacity to eliminate dark border lines\n            pass
 
         final_img.paste(pristine_placed, (final_ox, final_oy), mask=mask_im)
         return final_img, None

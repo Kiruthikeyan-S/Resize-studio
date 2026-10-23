@@ -12,7 +12,7 @@ from services.crop_engine import SIZE_PRESETS, all_selection_ids
 client = TestClient(app)
 
 EXPECTED = {
-    "square_1x1": {"large": (2048, 2048), "medium": (1080, 1080), "small": (512, 512)},
+    "square_1x1": {"large": (2048, 2048), "medium": (1024, 1024), "small": (512, 512)},
     "portrait_4x5": {"large": (1600, 2000), "medium": (1080, 1350), "small": (800, 1000)},
     "portrait_3x4": {"large": (1536, 2048), "medium": (1080, 1440), "small": (768, 1024)},
     "landscape_16x9": {"large": (2560, 1440), "medium": (1920, 1080), "small": (1280, 720)},

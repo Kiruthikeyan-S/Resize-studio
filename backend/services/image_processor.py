@@ -8,6 +8,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from PIL import Image
 
 from services.crop_engine import (
+    process_safe_fit,
     RATIO_CONFIGS,
     resolve_ratio_config,
     process_image_for_ratio,
@@ -526,7 +527,8 @@ def generate_comparison_pipeline(
     sharpen: bool = False,
     denoise: bool = False,
     allow_opencv_fallback: bool = False,
-    prompt_hint: Optional[str] = None
+    prompt_hint: Optional[str] = None,
+    standard_fit: str = "stretch"
 ) -> Dict[str, Any]:
     """
     Generate both Standard Resize (Direct Stretch) and AI Enhanced Resize
@@ -605,9 +607,22 @@ def generate_comparison_pipeline(
             os.makedirs(ai_ratio_dir, exist_ok=True)
 
             # ==========================================
-            # 1. METHOD A: STANDARD RESIZE (DIRECT STRETCH)
+            # 1. METHOD A: STANDARD RESIZE (CONFIGURABLE FIT)
             # ==========================================
-            std_large_img = direct_stretch(source_img, tw, th)
+            std_fit = (standard_fit or "stretch").lower()
+            if std_fit in ["contain", "safe_fit", "fit_contain"]:
+                std_large_img, std_crop_box = process_safe_fit(
+                    source_img, tw, th, bg_color_hex=bg_color_hex, is_transparent=is_transparent
+                )
+                effective_std_mode = "safe_fit"
+            elif std_fit in ["cover", "smart_crop", "crop"]:
+                std_large_img, std_crop_box, _, effective_std_mode, _ = process_image_for_ratio(
+                    source_img, config, mode="smart_crop", bg_color_hex=bg_color_hex, is_transparent=is_transparent
+                )
+            else:
+                std_large_img = direct_stretch(source_img, tw, th)
+                std_crop_box = (0, 0, orig_w, orig_h)
+                effective_std_mode = "direct_stretch"
             if sharpen:
                 std_large_img = apply_mild_sharpening(std_large_img)
             if denoise:
@@ -679,8 +694,9 @@ def generate_comparison_pipeline(
                 "source_url": f"/api/original/{image_id}",
                 "source_width": orig_w,
                 "source_height": orig_h,
-                "crop_box": [0, 0, orig_w, orig_h],
-                "mode": "direct_stretch",
+                "crop_box": list(std_crop_box) if "std_crop_box" in locals() and std_crop_box else [0, 0, orig_w, orig_h],
+                "mode": effective_std_mode if "effective_std_mode" in locals() else "direct_stretch",
+                "fit": std_fit,
                 "status": "ready",
                 "variants": std_variants,
             }
@@ -696,6 +712,7 @@ def generate_comparison_pipeline(
                 prompt_hint=prompt_hint,
                 bg_color_hex=bg_color_hex,
                 allow_opencv_fallback=allow_opencv_fallback,
+                is_transparent=is_transparent,
             )
 
             ai_status = ai_meta["status"]

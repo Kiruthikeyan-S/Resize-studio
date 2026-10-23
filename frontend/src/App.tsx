@@ -38,6 +38,7 @@ export const App: React.FC = () => {
   const [settings, setSettings] = useState<ConvertSettings>({
     image_id: '',
     mode: 'direct_stretch',
+    standard_fit: 'stretch',
     bg_color_hex: '#F8FAFC',
     is_transparent: false,
     export_format: 'jpeg',
@@ -257,6 +258,7 @@ export const App: React.FC = () => {
         sharpen: settings.sharpen,
         denoise: settings.denoise,
         allow_opencv_fallback: true,
+        standard_fit: settings.standard_fit || 'stretch',
       });
 
       setComparisonRowsMap((prev) => ({

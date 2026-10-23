@@ -43,7 +43,7 @@ export const ComparisonCard: React.FC<ComparisonCardProps> = ({
 
   const handleDownload = () => {
     if (!isAvailable) return;
-    const url = api.getDownloadUrl(imageId, item.safe_key, item.mode, selectedSize, method);
+    const url = api.getDownloadUrl(imageId, item.safe_key, undefined, selectedSize, method);
     const link = document.createElement('a');
     link.href = url;
     const downloadName =
@@ -62,7 +62,7 @@ export const ComparisonCard: React.FC<ComparisonCardProps> = ({
   };
 
   const previewSrc = isAvailable
-    ? api.getPreviewUrl(imageId, item.safe_key, item.version, item.mode, selectedSize, method)
+    ? api.getPreviewUrl(imageId, item.safe_key, item.version, undefined, selectedSize, method)
     : '';
 
   return (
@@ -117,6 +117,10 @@ export const ComparisonCard: React.FC<ComparisonCardProps> = ({
           <p className="text-xs text-slate-500">
             {isAI
               ? 'Maintains natural product proportions; outpainted background.'
+              : item.mode === 'safe_fit'
+              ? 'Safe Fit (contain). 100% original content preserved without distortion.'
+              : item.mode === 'smart_crop'
+              ? 'Smart Cover (crop). Fills canvas with subject-centered crop.'
               : 'Direct stretch (Lanczos). Preserves 100% of approved pixels.'}
           </p>
         </div>

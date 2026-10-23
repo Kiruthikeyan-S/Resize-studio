@@ -129,11 +129,11 @@ def test_download_specific_size_variant():
     )
     assert conv_resp.status_code == 200
 
-    # Download medium variant for square_1x1 (should be 1080x1080)
+    # Download medium variant for square_1x1 (should be 1024x1024)
     dl_med = client.get(f"/api/download/{image_id}/square_1x1?size=medium")
     assert dl_med.status_code == 200
     with Image.open(io.BytesIO(dl_med.content)) as im:
-        assert im.size == (1080, 1080)
+        assert im.size == (1024, 1024)
 
     # Download small variant for square_1x1 (should be 512x512)
     dl_small = client.get(f"/api/download/{image_id}/square_1x1?size=small")

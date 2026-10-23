@@ -84,6 +84,7 @@ export interface ComparisonRow {
 export interface ConvertSettings {
   image_id: string;
   mode: 'direct_stretch' | 'comparison' | 'smart_crop' | 'ai_expand' | 'safe_fit' | 'manual_crop';
+  standard_fit?: 'stretch' | 'contain' | 'cover';
   bg_color_hex: string;
   is_transparent: boolean;
   export_format: 'jpeg' | 'png' | 'webp';
@@ -105,6 +106,7 @@ export interface ConvertComparisonSettings {
   denoise: boolean;
   allow_opencv_fallback?: boolean;
   prompt_hint?: string;
+  standard_fit?: 'stretch' | 'contain' | 'cover';
 }
 
 export interface ConvertComparisonResponse {
@@ -139,7 +141,7 @@ export const RATIO_SIZE_TABLE: {
   name: string;
   sizes: Record<SizeKey, [number, number]>;
 }[] = [
-  { safe_key: 'square_1x1', name: 'Square (1:1)', sizes: { large: [2048, 2048], medium: [1080, 1080], small: [512, 512] } },
+  { safe_key: 'square_1x1', name: 'Square (1:1)', sizes: { large: [2048, 2048], medium: [1024, 1024], small: [512, 512] } },
   { safe_key: 'portrait_4x5', name: 'Portrait (4:5)', sizes: { large: [1600, 2000], medium: [1080, 1350], small: [800, 1000] } },
   { safe_key: 'portrait_3x4', name: 'Portrait (3:4)', sizes: { large: [1536, 2048], medium: [1080, 1440], small: [768, 1024] } },
   { safe_key: 'landscape_16x9', name: 'Landscape (16:9)', sizes: { large: [2560, 1440], medium: [1920, 1080], small: [1280, 720] } },
@@ -324,9 +326,9 @@ export const api = {
 
   getDownloadUrl(imageId: string, safeKey: string, mode?: string, size?: string, method?: string): string {
     const params = new URLSearchParams();
-    if (mode) params.set('mode', mode);
     if (size) params.set('size', size);
     if (method) params.set('method', method);
+    if (mode && !method) params.set('mode', mode);
     const q = params.toString() ? `?${params.toString()}` : '';
     return `${API_BASE}/download/${imageId}/${safeKey}${q}`;
   },

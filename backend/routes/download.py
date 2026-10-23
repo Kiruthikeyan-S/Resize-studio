@@ -194,48 +194,64 @@ async def download_single_image(
     selected_size = size.lower() if size else "large"
     m = method.lower() if method else "standard"
 
-    # 0. If mode is specified, check mode-specific file first
-    if mode:
+    # 0. If mode is explicitly requested and no explicit size variant is requested, prioritize mode-specific file
+    if mode and not size:
         for k in keys_to_check:
             for ext in ["jpg", "jpeg", "png", "webp"]:
                 candidate = os.path.join(gen_session_dir, f"image_{k}_{mode}.{ext}")
-                if os.path.exists(candidate):
+                if os.path.isfile(candidate) and os.path.getsize(candidate) > 0:
                     target_file = candidate
                     target_ext = ext
                     break
             if target_file:
                 break
 
-    # 1. Look in method folder
+    # 1. When size is specified or method is known, look in method directory first
+    for k in keys_to_check:
+        for ext in ["jpg", "jpeg", "png", "webp"]:
+            candidate = os.path.join(gen_session_dir, m, k, f"{selected_size}.{ext}")
+            if os.path.isfile(candidate) and os.path.getsize(candidate) > 0:
+                target_file = candidate
+                target_ext = ext
+                break
+        if target_file:
+            break
+
+    # 2. Look in root session files for size variant
     if not target_file:
         for k in keys_to_check:
             for ext in ["jpg", "jpeg", "png", "webp"]:
-                candidate = os.path.join(gen_session_dir, m, k, f"{selected_size}.{ext}")
-                if os.path.exists(candidate):
+                candidate = os.path.join(gen_session_dir, f"{m}_{k}_{selected_size}.{ext}")
+                if os.path.isfile(candidate) and os.path.getsize(candidate) > 0:
                     target_file = candidate
+                    target_ext = ext
+                    break
+                candidate2 = os.path.join(gen_session_dir, f"image_{k}_{selected_size}.{ext}")
+                if os.path.isfile(candidate2) and os.path.getsize(candidate2) > 0:
+                    target_file = candidate2
                     target_ext = ext
                     break
             if target_file:
                 break
 
-    # 2. Look in root session files
-    if not target_file:
+    # 3. If mode is specified without explicit variant, check mode-specific file
+    if not target_file and mode:
         for k in keys_to_check:
             for ext in ["jpg", "jpeg", "png", "webp"]:
-                candidate = os.path.join(gen_session_dir, f"image_{k}_{selected_size}.{ext}")
-                if os.path.exists(candidate):
+                candidate = os.path.join(gen_session_dir, f"image_{k}_{mode}.{ext}")
+                if os.path.isfile(candidate) and os.path.getsize(candidate) > 0:
                     target_file = candidate
                     target_ext = ext
                     break
             if target_file:
                 break
 
-    # 3. Check canonical / default file
+    # 4. Check canonical / default file
     if not target_file:
         for k in keys_to_check:
             for ext in ["jpg", "jpeg", "png", "webp"]:
                 candidate = os.path.join(gen_session_dir, f"image_{k}.{ext}")
-                if os.path.exists(candidate):
+                if os.path.isfile(candidate) and os.path.getsize(candidate) > 0:
                     target_file = candidate
                     target_ext = ext
                     break

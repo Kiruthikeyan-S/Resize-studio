@@ -86,6 +86,7 @@ class OutputRatioItem(BaseModel):
     source_height: int
     crop_box: List[int]
     mode: str
+    fit: Optional[str] = None
     status: Optional[str] = "ready"
     provider: Optional[str] = None
     error_message: Optional[str] = None
@@ -117,6 +118,7 @@ class ConvertComparisonRequest(BaseModel):
     denoise: bool = Field(default=False)
     allow_opencv_fallback: bool = Field(default=True)
     prompt_hint: Optional[str] = None
+    standard_fit: str = Field(default="stretch", description="stretch, contain, or cover")
 
 
 class ConvertComparisonResponse(BaseModel):
@@ -248,6 +250,7 @@ async def convert_comparison_endpoint(payload: ConvertComparisonRequest):
             denoise=payload.denoise,
             allow_opencv_fallback=payload.allow_opencv_fallback,
             prompt_hint=payload.prompt_hint,
+            standard_fit=payload.standard_fit,
         )
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Image session not found or expired.")

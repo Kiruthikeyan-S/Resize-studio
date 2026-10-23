@@ -92,7 +92,7 @@ def resolve_ratio_config(key: str) -> Optional[Dict[str, Any]]:
 SIZE_KEYS: List[str] = ["large", "medium", "small"]
 SIZE_LABELS: Dict[str, str] = {"large": "Large", "medium": "Medium", "small": "Small"}
 SIZE_PRESETS: Dict[str, Dict[str, Tuple[int, int]]] = {
-    "square_1x1": {"large": (2048, 2048), "medium": (1080, 1080), "small": (512, 512)},
+    "square_1x1": {"large": (2048, 2048), "medium": (1024, 1024), "small": (512, 512)},
     "portrait_4x5": {"large": (1600, 2000), "medium": (1080, 1350), "small": (800, 1000)},
     "portrait_3x4": {"large": (1536, 2048), "medium": (1080, 1440), "small": (768, 1024)},
     "landscape_16x9": {"large": (2560, 1440), "medium": (1920, 1080), "small": (1280, 720)},
