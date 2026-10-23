@@ -181,25 +181,37 @@ def studio_texture_background_expansion(
     if custom_bg is not None or scene_type in ["studio_solid", "graphic"] or perim_std < 5.0:
         fill_color = custom_bg if custom_bg is not None else tuple(int(c) for c in perim_median)
         canvas_np[:, :] = fill_color
+        canvas_np[offset_y:offset_y + placed_h, offset_x:offset_x + placed_w] = placed_np
     else:
-        # 1. Continuous 2D atmospheric ambient canvas (smooth bilinear gradient from 4 corners)
-        corner_sz = max(4, min(16, min(placed_w, placed_h) // 10))
-        tl = np.median(placed_np[:corner_sz, :corner_sz], axis=(0, 1)).astype(np.float32)
-        tr = np.median(placed_np[:corner_sz, -corner_sz:], axis=(0, 1)).astype(np.float32)
-        bl = np.median(placed_np[-corner_sz:, :corner_sz], axis=(0, 1)).astype(np.float32)
-        br = np.median(placed_np[-corner_sz:, -corner_sz:], axis=(0, 1)).astype(np.float32)
+        # 1. Isolate dominant background color using K-Means clustering (K=3)
+        # Filters out foreground elements (flowers, stamens, leaves, branches) touching the edges
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
+        try:
+            _, labels, centers = cv2.kmeans(perim_samples.astype(np.float32), 3, None, criteria, 5, cv2.KMEANS_PP_CENTERS)
+            counts = np.bincount(labels.flatten())
+            bg_idx = np.argmax(counts)
+            bg_color = centers[bg_idx]
+        except Exception:
+            bg_color = perim_median.astype(np.float32)
 
+        # Extract top vs bottom ambient colors from background cluster pixels
+        top_pixels = placed_np[:bw * 2, :, :].reshape(-1, 3).astype(np.float32)
+        dist_top = np.linalg.norm(top_pixels - bg_color, axis=1)
+        top_bg = top_pixels[dist_top < 65]
+        top_ambient = np.median(top_bg, axis=0) if len(top_bg) > 0 else bg_color
+
+        bot_pixels = placed_np[-bw * 2:, :, :].reshape(-1, 3).astype(np.float32)
+        dist_bot = np.linalg.norm(bot_pixels - bg_color, axis=1)
+        bot_bg = bot_pixels[dist_bot < 65]
+        bot_ambient = np.median(bot_bg, axis=0) if len(bot_bg) > 0 else bg_color
+
+        # 2. Build canvas with continuous vertical ambient gradient
         y_norm = np.linspace(0.0, 1.0, target_h, dtype=np.float32)[:, None, None]
-        x_norm = np.linspace(0.0, 1.0, target_w, dtype=np.float32)[None, :, None]
-        top_edge = tl * (1.0 - x_norm) + tr * x_norm
-        bot_edge = bl * (1.0 - x_norm) + br * x_norm
-        ambient_canvas = (top_edge * (1.0 - y_norm) + bot_edge * y_norm).astype(np.float32)
+        ambient_col = top_ambient * (1.0 - y_norm) + bot_ambient * y_norm
+        canvas_f = np.repeat(ambient_col, target_w, axis=1)
 
-        canvas_f = ambient_canvas.copy()
-
-        # 2. Localized boundary transition bands without 1D horizontal extrusion streaks
-        # Instead of repeating the 1px edge column across the whole margin, we smoothly transition
-        # over a decay band of max 48px from the image edge into the harmonious ambient lighting field.
+        # 3. Localized boundary transition bands without 1D horizontal extrusion streaks
+        # Smoothly transitions from the image boundary into the harmonious ambient lighting field.
         decay_max = 48
 
         if pad_left > 0:
@@ -208,12 +220,9 @@ def studio_texture_background_expansion(
             start_x = offset_x - decay_w
             t = np.linspace(0.0, 1.0, decay_w, dtype=np.float32)[None, :, None]
             t_smooth = 0.5 - 0.5 * np.cos(np.pi * t)
-            ambient_band = ambient_canvas[offset_y:offset_y + placed_h, start_x:offset_x]
+            ambient_band = canvas_f[offset_y:offset_y + placed_h, start_x:offset_x]
             band_col = np.repeat(edge_col[:, None, :], decay_w, axis=1)
-            kw = max(3, (decay_w // 4) * 2 + 1)
-            kh = max(3, (placed_h // 25) * 2 + 1)
-            band_col_smooth = cv2.GaussianBlur(band_col, (kw, kh), 0)
-            canvas_f[offset_y:offset_y + placed_h, start_x:offset_x] = ambient_band * (1.0 - t_smooth) + band_col_smooth * t_smooth
+            canvas_f[offset_y:offset_y + placed_h, start_x:offset_x] = ambient_band * (1.0 - t_smooth) + band_col * t_smooth
 
         if pad_right > 0:
             edge_col = placed_np[:, -1, :].astype(np.float32)
@@ -221,12 +230,9 @@ def studio_texture_background_expansion(
             end_x = offset_x + placed_w + decay_w
             t = np.linspace(1.0, 0.0, decay_w, dtype=np.float32)[None, :, None]
             t_smooth = 0.5 - 0.5 * np.cos(np.pi * t)
-            ambient_band = ambient_canvas[offset_y:offset_y + placed_h, offset_x + placed_w:end_x]
+            ambient_band = canvas_f[offset_y:offset_y + placed_h, offset_x + placed_w:end_x]
             band_col = np.repeat(edge_col[:, None, :], decay_w, axis=1)
-            kw = max(3, (decay_w // 4) * 2 + 1)
-            kh = max(3, (placed_h // 25) * 2 + 1)
-            band_col_smooth = cv2.GaussianBlur(band_col, (kw, kh), 0)
-            canvas_f[offset_y:offset_y + placed_h, offset_x + placed_w:end_x] = ambient_band * (1.0 - t_smooth) + band_col_smooth * t_smooth
+            canvas_f[offset_y:offset_y + placed_h, offset_x + placed_w:end_x] = ambient_band * (1.0 - t_smooth) + band_col * t_smooth
 
         if pad_top > 0:
             edge_row = placed_np[0, :, :].astype(np.float32)
@@ -234,12 +240,9 @@ def studio_texture_background_expansion(
             start_y = offset_y - decay_h
             t = np.linspace(0.0, 1.0, decay_h, dtype=np.float32)[:, None, None]
             t_smooth = 0.5 - 0.5 * np.cos(np.pi * t)
-            ambient_band = ambient_canvas[start_y:offset_y, offset_x:offset_x + placed_w]
+            ambient_band = canvas_f[start_y:offset_y, offset_x:offset_x + placed_w]
             band_row = np.repeat(edge_row[None, :, :], decay_h, axis=0)
-            kw = max(3, (placed_w // 25) * 2 + 1)
-            kh = max(3, (decay_h // 4) * 2 + 1)
-            band_row_smooth = cv2.GaussianBlur(band_row, (kw, kh), 0)
-            canvas_f[start_y:offset_y, offset_x:offset_x + placed_w] = ambient_band * (1.0 - t_smooth) + band_row_smooth * t_smooth
+            canvas_f[start_y:offset_y, offset_x:offset_x + placed_w] = ambient_band * (1.0 - t_smooth) + band_row * t_smooth
 
         if pad_bottom > 0:
             edge_row = placed_np[-1, :, :].astype(np.float32)
@@ -247,40 +250,13 @@ def studio_texture_background_expansion(
             end_y = offset_y + placed_h + decay_h
             t = np.linspace(1.0, 0.0, decay_h, dtype=np.float32)[:, None, None]
             t_smooth = 0.5 - 0.5 * np.cos(np.pi * t)
-            ambient_band = ambient_canvas[offset_y + placed_h:end_y, offset_x:offset_x + placed_w]
+            ambient_band = canvas_f[offset_y + placed_h:end_y, offset_x:offset_x + placed_w]
             band_row = np.repeat(edge_row[None, :, :], decay_h, axis=0)
-            kw = max(3, (placed_w // 25) * 2 + 1)
-            kh = max(3, (decay_h // 4) * 2 + 1)
-            band_row_smooth = cv2.GaussianBlur(band_row, (kw, kh), 0)
-            canvas_f[offset_y + placed_h:end_y, offset_x:offset_x + placed_w] = ambient_band * (1.0 - t_smooth) + band_row_smooth * t_smooth
+            canvas_f[offset_y + placed_h:end_y, offset_x:offset_x + placed_w] = ambient_band * (1.0 - t_smooth) + band_row * t_smooth
 
+        # 4. Pristine subject compositing: Exact pixel continuity at boundaries (Delta = 0)
+        canvas_f[offset_y:offset_y + placed_h, offset_x:offset_x + placed_w] = placed_np.astype(np.float32)
         canvas_np = np.clip(canvas_f, 0, 255).astype(np.uint8)
-
-    # 3. SEAMLESS COMPOSITING WITH SMOOTH COSINE ALPHA MASK
-    # Completely eliminates the vertical and horizontal seam lines between source photo and canvas
-    blend_sz = min(18, min(placed_w, placed_h) // 16)
-    if blend_sz >= 2:
-        alpha_mask = np.ones((placed_h, placed_w), dtype=np.float32)
-        if pad_left > 0:
-            for x in range(blend_sz):
-                alpha_mask[:, x] *= (0.5 - 0.5 * np.cos(np.pi * x / blend_sz))
-        if pad_right > 0:
-            for x in range(blend_sz):
-                alpha_mask[:, placed_w - 1 - x] *= (0.5 - 0.5 * np.cos(np.pi * x / blend_sz))
-        if pad_top > 0:
-            for y in range(blend_sz):
-                alpha_mask[y, :] *= (0.5 - 0.5 * np.cos(np.pi * y / blend_sz))
-        if pad_bottom > 0:
-            for y in range(blend_sz):
-                alpha_mask[placed_h - 1 - y, :] *= (0.5 - 0.5 * np.cos(np.pi * y / blend_sz))
-
-        placed_f = placed_np.astype(np.float32)
-        roi_target = canvas_np[offset_y:offset_y + placed_h, offset_x:offset_x + placed_w].astype(np.float32)
-        alpha_3d = alpha_mask[:, :, None]
-        composited = placed_f * alpha_3d + roi_target * (1.0 - alpha_3d)
-        canvas_np[offset_y:offset_y + placed_h, offset_x:offset_x + placed_w] = np.clip(composited, 0, 255).astype(np.uint8)
-    else:
-        canvas_np[offset_y:offset_y + placed_h, offset_x:offset_x + placed_w] = placed_np
 
     return Image.fromarray(canvas_np)
 
