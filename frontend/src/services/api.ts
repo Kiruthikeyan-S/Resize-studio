@@ -29,7 +29,7 @@ export interface FitInfo {
 export interface OutputVariant {
   selection_id: string;
   legacy_selection_id?: string;
-  method?: 'standard' | 'gemini' | 'groq' | 'ai';
+  method?: 'standard' | 'groq' | 'ai';
   ratio_safe_key: string;
   ratio_name: string;
   size_key: 'large' | 'medium' | 'small';
@@ -45,7 +45,7 @@ export interface RatioOutput {
   ratio_key: string;
   safe_key: string;
   legacy_key?: string;
-  method?: 'standard' | 'gemini' | 'groq' | 'ai';
+  method?: 'standard' | 'groq' | 'ai';
   name: string;
   width: number;
   height: number;
@@ -79,10 +79,9 @@ export interface ComparisonRow {
   height: number;
   orientation: string;
   standard: RatioOutput;
-  gemini?: RatioOutput;
   groq?: RatioOutput;
   ai: RatioOutput;
-  preferred_method: 'standard' | 'gemini' | 'groq' | 'ai';
+  preferred_method: 'standard' | 'groq' | 'ai';
 }
 
 export interface ConvertSettings {
@@ -122,9 +121,6 @@ export interface ConvertComparisonResponse {
   ai_provider?: string;
   ai_message?: string;
   ai_is_generative?: boolean;
-  gemini_status?: 'ready' | 'unavailable' | 'failed' | 'fallback';
-  gemini_provider?: string;
-  gemini_message?: string;
   groq_status?: 'ready' | 'unavailable' | 'failed' | 'fallback';
   groq_provider?: string;
   groq_message?: string;
@@ -242,7 +238,6 @@ export const api = {
       data.rows = data.rows.map((row) => ({
         ...row,
         standard: normalizeRatioOutput(row.standard),
-        gemini: row.gemini ? normalizeRatioOutput(row.gemini) : undefined,
         groq: row.groq ? normalizeRatioOutput(row.groq) : undefined,
         ai: normalizeRatioOutput(row.ai),
       }));

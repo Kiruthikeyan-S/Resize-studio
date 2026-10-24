@@ -4,8 +4,8 @@ import { ComparisonCard } from './ComparisonCard';
 
 interface ComparisonRowProps {
   row: ComparisonRowType;
-  preferredMethod: 'standard' | 'gemini' | 'groq' | 'ai';
-  onPreferenceChange: (method: 'standard' | 'gemini' | 'groq' | 'ai') => void;
+  preferredMethod: 'standard' | 'groq' | 'ai';
+  onPreferenceChange: (method: 'standard' | 'groq' | 'ai') => void;
   imageId: string;
   onOpenPreviewModal: (item: RatioOutput) => void;
 }

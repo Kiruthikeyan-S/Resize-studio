@@ -106,9 +106,9 @@ def all_selection_ids() -> List[str]:
 
 
 def all_comparison_selection_ids() -> List[str]:
-    """All comparison selection identifiers (standard, gemini, groq, ai)."""
+    """All comparison selection identifiers (standard, ai, groq)."""
     ids = []
-    for m in ["standard", "ai", "gemini", "groq"]:
+    for m in ["standard", "ai", "groq"]:
         for cfg in RATIO_CONFIGS.values():
             for s in SIZE_KEYS:
                 ids.append(f"{m}:{cfg['safe_key']}:{s}")

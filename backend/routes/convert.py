@@ -105,7 +105,6 @@ class ComparisonRatioRow(BaseModel):
     height: int
     orientation: str
     standard: OutputRatioItem
-    gemini: Optional[OutputRatioItem] = None
     groq: Optional[OutputRatioItem] = None
     ai: OutputRatioItem
     preferred_method: str = "standard"
@@ -133,9 +132,6 @@ class ConvertComparisonResponse(BaseModel):
     ai_provider: Optional[str] = None
     ai_message: Optional[str] = None
     ai_is_generative: Optional[bool] = False
-    gemini_status: Optional[str] = None
-    gemini_provider: Optional[str] = None
-    gemini_message: Optional[str] = None
     groq_status: Optional[str] = None
     groq_provider: Optional[str] = None
     groq_message: Optional[str] = None
@@ -275,9 +271,6 @@ async def convert_comparison_endpoint(payload: ConvertComparisonRequest):
         ai_provider=results.get("ai", {}).get("provider"),
         ai_message=results.get("ai", {}).get("error_message"),
         ai_is_generative=results.get("ai", {}).get("is_generative_ai", False),
-        gemini_status=results.get("gemini", {}).get("status"),
-        gemini_provider=results.get("gemini", {}).get("provider"),
-        gemini_message=results.get("gemini", {}).get("error_message"),
         groq_status=results.get("groq", {}).get("status"),
         groq_provider=results.get("groq", {}).get("provider"),
         groq_message=results.get("groq", {}).get("error_message"),

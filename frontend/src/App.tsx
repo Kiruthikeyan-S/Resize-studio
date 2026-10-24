@@ -36,12 +36,10 @@ export const App: React.FC = () => {
     status: string;
     provider?: string;
     message?: string;
-    geminiStatus?: string;
-    geminiMessage?: string;
     groqStatus?: string;
     groqMessage?: string;
   }>>({});
-  const [preferencesMap, setPreferencesMap] = useState<Record<string, Record<string, 'standard' | 'gemini' | 'groq' | 'ai'>>>({});
+  const [preferencesMap, setPreferencesMap] = useState<Record<string, Record<string, 'standard' | 'groq' | 'ai'>>>({});
 
   const [settings, setSettings] = useState<ConvertSettings>({
     image_id: '',
@@ -280,8 +278,6 @@ export const App: React.FC = () => {
           status: response.ai_status,
           provider: response.ai_provider,
           message: response.ai_message,
-          geminiStatus: response.gemini_status,
-          geminiMessage: response.gemini_message,
           groqStatus: response.groq_status,
           groqMessage: response.groq_message,
         },
@@ -311,7 +307,7 @@ export const App: React.FC = () => {
     }
   };
 
-  const handlePreferenceChange = (safeKey: string, method: 'standard' | 'gemini' | 'groq' | 'ai') => {
+  const handlePreferenceChange = (safeKey: string, method: 'standard' | 'groq' | 'ai') => {
     if (!activeImage) return;
     setPreferencesMap((prev) => ({
       ...prev,
@@ -582,8 +578,6 @@ export const App: React.FC = () => {
                     aiStatus={currentAiInfo?.status}
                     aiProvider={currentAiInfo?.provider}
                     aiMessage={currentAiInfo?.message}
-                    geminiStatus={currentAiInfo?.geminiStatus}
-                    geminiMessage={currentAiInfo?.geminiMessage}
                     groqStatus={currentAiInfo?.groqStatus}
                     groqMessage={currentAiInfo?.groqMessage}
                     onOpenPreviewModal={(it: RatioOutput) => setPreviewModalItem(it)}

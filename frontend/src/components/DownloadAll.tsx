@@ -12,7 +12,7 @@ interface DownloadAllProps {
   /** Comparison rows if in comparison mode. */
   comparisonRows?: ComparisonRow[];
   /** User preferred method per ratio safe_key ('standard' | 'ai'). */
-  preferences?: Record<string, 'standard' | 'gemini' | 'groq' | 'ai'>;
+  preferences?: Record<string, 'standard' | 'groq' | 'ai'>;
 }
 
 const SIZE_HEADERS: Record<SizeKey, string> = { large: 'Large', medium: 'Medium', small: 'Small' };
@@ -299,7 +299,7 @@ export const DownloadAll: React.FC<DownloadAllProps> = ({
               if (isComparison) {
                 return (['standard', 'ai'] as const).map((method) => {
                   const isPreferredRow = (pref === 'standard' && method === 'standard') ||
-                                         ((pref === 'ai' || pref === 'groq' || pref === 'gemini') && method === 'ai');
+                                         ((pref === 'ai' || pref === 'groq') && method === 'ai');
                   const rowIds = SIZE_KEYS.map((s) => {
                     const sid = `${method}:${row.safe_key}:${s}`;
                     const groqSid = `groq:${row.safe_key}:${s}`;

@@ -22,7 +22,6 @@ from services.crop_engine import (
 )
 from services.ai_background_expander import (
     expand_background_ai,
-    expand_background_gemini,
     expand_background_groq,
     get_configured_ai_provider,
 )
@@ -562,16 +561,14 @@ def generate_comparison_pipeline(
     standard_fit: str = "stretch"
 ) -> Dict[str, Any]:
     """
-    Generate three independent image-processing methods from the approved cropped working image:
+    Generate two primary image-processing methods from the approved cropped working image:
       Method A: Standard Resize (Pure Pillow LANCZOS)
-      Method B: Gemini AI Image Editing (Google GenAI SDK)
-      Method C: Groq-Assisted Image Processing (Groq Vision + Studio synthesis)
+      Method B: AI Enhanced Background Extension (Groq Vision + Studio adaptive diffusion)
     Saves separated output directories:
       generated/{image_id}/standard/{safe_key}/
-      generated/{image_id}/gemini/{safe_key}/
+      generated/{image_id}/ai/{safe_key}/
       generated/{image_id}/groq/{safe_key}/
-      generated/{image_id}/ai/{safe_key}/  (alias for backward compatibility)
-    Returns structured comparison rows (standard, gemini, groq, ai) and unified variants manifest.
+    Returns structured comparison rows (standard, ai, groq) and unified variants manifest.
     """
     orig_path = get_original_file_path(image_id)
     if not orig_path or not os.path.exists(orig_path):
@@ -609,16 +606,13 @@ def generate_comparison_pipeline(
 
     # Create root method storage directories
     std_root = os.path.join(gen_session_dir, "standard")
-    gemini_root = os.path.join(gen_session_dir, "gemini")
     groq_root = os.path.join(gen_session_dir, "groq")
     ai_root = os.path.join(gen_session_dir, "ai")
     os.makedirs(std_root, exist_ok=True)
-    os.makedirs(gemini_root, exist_ok=True)
     os.makedirs(groq_root, exist_ok=True)
     os.makedirs(ai_root, exist_ok=True)
 
     standard_outputs = []
-    gemini_outputs = []
     groq_outputs = []
     ai_outputs = []
     all_variants = []
@@ -631,7 +625,6 @@ def generate_comparison_pipeline(
         groq_cached_analysis = analyze_scene_for_background_expansion(orig_path)
     except Exception:
         groq_cached_analysis = None
-    gemini_fail_fast_err = None
 
     with Image.open(orig_path) as source_img:
         source_img = ensure_srgb_profile(source_img)
@@ -643,11 +636,9 @@ def generate_comparison_pipeline(
 
             # Method subdirectories
             std_ratio_dir = os.path.join(std_root, safe_key)
-            gemini_ratio_dir = os.path.join(gemini_root, safe_key)
             groq_ratio_dir = os.path.join(groq_root, safe_key)
             ai_ratio_dir = os.path.join(ai_root, safe_key)
             os.makedirs(std_ratio_dir, exist_ok=True)
-            os.makedirs(gemini_ratio_dir, exist_ok=True)
             os.makedirs(groq_ratio_dir, exist_ok=True)
             os.makedirs(ai_ratio_dir, exist_ok=True)
 
@@ -788,11 +779,9 @@ def generate_comparison_pipeline(
                 ai_img.save(ai_large_file, format=export_format.upper(), **save_kwargs)
                 ai_large_size = os.path.getsize(ai_large_file)
 
-                # Also save to groq and gemini ratio directories for backward compatibility
+                # Also save to groq ratio directory for backward compatibility
                 groq_large_file = os.path.join(groq_ratio_dir, f"large.{ext}")
-                gemini_large_file = os.path.join(gemini_ratio_dir, f"large.{ext}")
                 shutil.copyfile(ai_large_file, groq_large_file)
-                shutil.copyfile(ai_large_file, gemini_large_file)
 
                 # Method B Variants (Large, Medium, Small)
                 for size_key in SIZE_KEYS:
@@ -801,7 +790,6 @@ def generate_comparison_pipeline(
                     v_path = os.path.join(ai_ratio_dir, f"{size_key}.{ext}")
                     v_img.save(v_path, format=export_format.upper(), **save_kwargs)
                     shutil.copyfile(v_path, os.path.join(groq_ratio_dir, f"{size_key}.{ext}"))
-                    shutil.copyfile(v_path, os.path.join(gemini_ratio_dir, f"{size_key}.{ext}"))
 
                     var_item_ai = {
                         "selection_id": f"ai:{safe_key}:{size_key}",
@@ -832,7 +820,6 @@ def generate_comparison_pipeline(
                 ai_thumb_path = os.path.join(ai_ratio_dir, "thumb.webp")
                 ai_thumb.save(ai_thumb_path, format="WEBP", quality=88)
                 shutil.copyfile(ai_thumb_path, os.path.join(groq_ratio_dir, "thumb.webp"))
-                shutil.copyfile(ai_thumb_path, os.path.join(gemini_ratio_dir, "thumb.webp"))
             else:
                 for size_key in SIZE_KEYS:
                     vw, vh = SIZE_PRESETS[safe_key][size_key]
@@ -887,10 +874,6 @@ def generate_comparison_pipeline(
             groq_output_item["download_url"] = f"/api/download/{image_id}/{safe_key}?method=groq"
             groq_outputs.append(groq_output_item)
 
-            gemini_output_item = dict(ai_output_item)
-            gemini_output_item["method"] = "gemini"
-            gemini_outputs.append(gemini_output_item)
-
             # Comparison Row with Method A (Standard) and Method B (AI)
             comparison_rows.append({
                 "safe_key": safe_key,
@@ -900,7 +883,6 @@ def generate_comparison_pipeline(
                 "height": th,
                 "orientation": config["orientation"],
                 "standard": std_output_item,
-                "gemini": gemini_output_item,
                 "groq": groq_output_item,
                 "ai": ai_output_item,
                 "preferred_method": "standard",
@@ -927,12 +909,6 @@ def generate_comparison_pipeline(
         "standard": {
             "status": "ready",
             "outputs": standard_outputs,
-        },
-        "gemini": {
-            "status": overall_ai_status,
-            "provider": overall_ai_provider,
-            "error_message": overall_ai_message,
-            "outputs": gemini_outputs,
         },
         "groq": {
             "status": overall_ai_status,

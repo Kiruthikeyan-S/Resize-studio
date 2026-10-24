@@ -6,12 +6,7 @@ from contextlib import asynccontextmanager
 try:
     import dotenv
     this_dir = os.path.dirname(os.path.abspath(__file__))
-    backend_env = os.path.join(this_dir, ".env")
-    if os.path.isfile(backend_env):
-        dotenv.load_dotenv(backend_env)
-    root_env = os.path.join(os.path.dirname(this_dir), ".env")
-    if os.path.isfile(root_env):
-        dotenv.load_dotenv(root_env)
+    dotenv.load_dotenv(os.path.join(this_dir, ".env"))
     dotenv.load_dotenv()
 except Exception:
     pass
