@@ -21,7 +21,6 @@ from services.crop_engine import (
     SIZE_PRESETS,
 )
 from services.ai_background_expander import (
-    generate_flux_realistic_background,
     is_cloudflare_enabled,
     expand_background_ai,
     expand_background_groq,
@@ -628,18 +627,7 @@ def generate_comparison_pipeline(
     except Exception:
         groq_cached_analysis = None
 
-    # Pre-generate realistic AI background master once for the session using Cloudflare FLUX
-    flux_bg_master = None
-    if is_cloudflare_enabled():
-        try:
-            with Image.open(orig_path) as _simg:
-                flux_bg_master = generate_flux_realistic_background(
-                    source_img=_simg,
-                    prompt=prompt_hint,
-                    vision_info=groq_cached_analysis,
-                )
-        except Exception:
-            flux_bg_master = None
+
 
     with Image.open(orig_path) as source_img:
         source_img = ensure_srgb_profile(source_img)
@@ -766,7 +754,6 @@ def generate_comparison_pipeline(
                 bg_color_hex=bg_color_hex,
                 is_transparent=is_transparent,
                 allow_opencv_fallback=allow_opencv_fallback,
-                flux_bg_master=flux_bg_master,
             )
             if ai_img is not None and groq_cached_analysis is None and ai_meta.get("analysis"):
                 groq_cached_analysis = ai_meta["analysis"]
