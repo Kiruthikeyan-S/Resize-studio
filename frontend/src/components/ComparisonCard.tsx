@@ -162,9 +162,12 @@ export const ComparisonCard: React.FC<ComparisonCardProps> = ({
       {isAI && status === 'fallback' && (
         <div className="px-4 py-2 bg-amber-50/80 border-b border-amber-200/60 flex items-start gap-2 text-[11px] text-amber-900 leading-tight">
           <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
-          <span>
-            <strong className="font-semibold">Standard/OpenCV Fallback:</strong> Classical canvas extension used. Configure <code className="bg-amber-100/80 px-1 py-0.5 rounded font-mono text-[10px]">OPENAI_API_KEY</code> in <code className="bg-amber-100/80 px-1 py-0.5 rounded font-mono text-[10px]">backend/.env</code> for genuine AI outpainting.
-          </span>
+          <div>
+            <div className="font-semibold">{item.error_message || 'Computer-vision photographic fallback used.'}</div>
+            <div className="text-[10px] text-amber-700 mt-0.5">
+              To enable genuine generative AI outpainting, configure a funded <code className="bg-amber-100/80 px-1 py-0.2 rounded font-mono">OPENAI_API_KEY</code>, <code className="bg-amber-100/80 px-1 py-0.2 rounded font-mono">STABILITY_API_KEY</code>, or <code className="bg-amber-100/80 px-1 py-0.2 rounded font-mono">HF_TOKEN</code> in <code className="bg-amber-100/80 px-1 py-0.2 rounded font-mono">backend/.env</code>.
+            </div>
+          </div>
         </div>
       )}
 

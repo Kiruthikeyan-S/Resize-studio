@@ -297,3 +297,64 @@ def test_session_isolation_prevents_stale_cache():
     # Center pixel of im1 must be red, im2 must be green
     assert im1.getpixel((1024, 1024))[0] > 200
     assert im2.getpixel((1024, 1024))[1] > 200
+
+
+def test_no_grey_bars_in_scenery_fallback():
+    """Verify scenery fallback outpainting continues natural colors without flat grey bars or visible seams."""
+    # Synthetic sky photograph: blue sky at top, white clouds at center, green foliage at bottom
+    src = Image.new("RGB", (400, 400), (80, 180, 220)) # Sky blue
+    for y in range(150, 250):
+        for x in range(400):
+            src.putpixel((x, y), (245, 245, 250)) # White clouds
+    for y in range(320, 400):
+        for x in range(400):
+            src.putpixel((x, y), (40, 120, 60)) # Green foliage
+
+    tw, th = 1600, 900 # 16:9
+    pw, ph, ox, oy, ext_type = calculate_expansion_canvas(400, 400, tw, th)
+
+    res = studio_texture_background_expansion(
+        img_rgb=src,
+        target_w=tw,
+        target_h=th,
+        placed_w=pw,
+        placed_h=ph,
+        offset_x=ox,
+        offset_y=oy,
+        expansion_type=ext_type
+    )
+
+    arr = np.array(res)
+    # 1. Left seam delta must be zero (seamless boundary)
+    left_seam_delta = np.max(np.abs(arr[:, ox].astype(float) - arr[:, ox - 1].astype(float)))
+    assert left_seam_delta == 0.0, f"Visible boundary seam on left: {left_seam_delta}"
+
+    # 2. Right seam delta must be zero
+    right_seam_delta = np.max(np.abs(arr[:, ox + pw - 1].astype(float) - arr[:, ox + pw].astype(float)))
+    assert right_seam_delta == 0.0, f"Visible boundary seam on right: {right_seam_delta}"
+
+    # 3. Left margin must NOT be a flat grey bar: top should be blue sky (B > 180), mid should be clouds (R > 230, G > 230), bot should be foliage (G > 80, B < 120)
+    far_x = 50
+    top_pixel = arr[50, far_x] # y=50 (sky)
+    mid_pixel = arr[th // 2, far_x] # y=450 (cloud)
+    bot_pixel = arr[th - 50, far_x] # y=850 (foliage)
+
+    assert top_pixel[2] > 170, f"Sky not blue at far edge: {top_pixel}"
+    assert mid_pixel[0] > 220 and mid_pixel[1] > 220, f"Clouds not white at far edge: {mid_pixel}"
+    assert bot_pixel[1] > bot_pixel[2], f"Foliage not green at far edge: {bot_pixel}"
+
+
+def test_strict_ai_mode_suppresses_blurry_fallback_on_api_error():
+    """Verify that when fallback is disabled, API failures never silently return blurred images."""
+    src = Image.new("RGB", (400, 400), (100, 150, 200))
+    with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-mock-key", "ALLOW_OPENCV_FALLBACK": "false"}):
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_openai_cls.return_value = mock_client
+            mock_client.images.edit.side_effect = Exception("OpenAI account has no credits remaining (credit_balance_exhausted)")
+
+            img, meta = expand_background_ai(src, 1600, 900, allow_opencv_fallback=False)
+            assert img is None, "Must not return an image when fallback is disabled"
+            assert meta["status"] == "failed"
+            assert meta["is_generative_ai"] is False
+            assert "credit" in meta["error_message"].lower()
