@@ -29,6 +29,8 @@ backend/storage/original/
 backend/storage/generated/
 storage/original/
 storage/generated/
+backend/generated_background.*
+backend/test_cf_tower*
 
 # Keep directory structure
 !backend/storage/original/.gitkeep

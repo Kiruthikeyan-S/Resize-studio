@@ -337,11 +337,13 @@ def call_cloudflare_workers_ai_inpainting(
     target_h: int,
     prompt: Optional[str] = None,
     vision_info: Optional[Dict[str, Any]] = None,
+    bg_color_hex: Optional[str] = None,
+    is_transparent: bool = False,
 ) -> Tuple[Optional[Image.Image], Optional[str]]:
     """
     Call Cloudflare Workers AI inpainting model (@cf/runwayml/stable-diffusion-v1-5-inpainting)
-    to generate authentic generative AI background outpainting.
-    Composites pristine original subject at full resolution.
+    with pre-filled studio background canvas and color-consistency validation.
+    Composites pristine original subject with smooth feather blending.
     """
     account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID")
     api_token = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
@@ -350,51 +352,75 @@ def call_cloudflare_workers_ai_inpainting(
 
     try:
         import requests
+        import numpy as np
+        from services.groq_vision import _local_scene_heuristic
+
         orig_w, orig_h = source_img.size
-        target_ratio = target_w / float(target_h)
-        base_size = 512
+        pw, ph, ox, oy, ext_type = calculate_expansion_canvas(orig_w, orig_h, target_w, target_h)
 
-        if target_ratio >= 1.0:
-            box_w = base_size
-            box_h = int(round(base_size / target_ratio))
-        else:
-            box_h = base_size
-            box_w = int(round(base_size * target_ratio))
+        # 1. Base studio background (never blank grey!)
+        base_bg = studio_texture_background_expansion(
+            img_rgb=source_img,
+            target_w=target_w,
+            target_h=target_h,
+            placed_w=pw,
+            placed_h=ph,
+            offset_x=ox,
+            offset_y=oy,
+            expansion_type=ext_type,
+            bg_color_hex=bg_color_hex,
+            is_transparent=is_transparent,
+            vision_info=vision_info,
+        )
 
-        box_x = (base_size - box_w) // 2
-        box_y = (base_size - box_h) // 2
+        # If no expansion needed, return pristine base
+        if ox == 0 and oy == 0:
+            return base_bg, None
 
-        scale = min(box_w / float(orig_w), box_h / float(orig_h))
-        pw = max(1, int(round(orig_w * scale)))
-        ph = max(1, int(round(orig_h * scale)))
-        ox = (box_w - pw) // 2
-        oy = (box_h - ph) // 2
-
-        placed_x = box_x + ox
-        placed_y = box_y + oy
-
-        # Initial canvas
-        canvas = Image.new("RGB", (base_size, base_size), (240, 240, 245))
-        placed_src = source_img.resize((pw, ph), Image.Resampling.LANCZOS)
-        canvas.paste(placed_src, (placed_x, placed_y))
-
-        # Mask: 255 for generation areas, 0 for protected subject
-        mask = Image.new("L", (base_size, base_size), 255)
-        mask.paste(Image.new("L", (max(1, pw - 4), max(1, ph - 4)), 0), (placed_x + 2, placed_y + 2))
-
-        buf_i = io.BytesIO()
-        canvas.save(buf_i, format="PNG")
-        buf_m = io.BytesIO()
-        mask.save(buf_m, format="PNG")
+        # 2. Extract scene information for an accurate prompt
+        scene_info = vision_info or _local_scene_heuristic(source_img)
+        top_hex = scene_info.get("top_color_hex", "#808080").lstrip("#")
+        bot_hex = scene_info.get("bottom_color_hex", "#808080").lstrip("#")
+        try:
+            top_rgb = tuple(int(top_hex[i:i+2], 16) for i in (0, 2, 4))
+            bot_rgb = tuple(int(bot_hex[i:i+2], 16) for i in (0, 2, 4))
+        except Exception:
+            top_rgb, bot_rgb = (128, 128, 128), (128, 128, 128)
 
         if prompt:
             final_prompt = prompt
-        elif vision_info:
-            desc = vision_info.get("subject_description", "photograph subject")
-            advice = vision_info.get("extension_advice", "seamless matching scenery continuation")
-            final_prompt = f"{desc}, {advice}, high quality, photorealistic, seamless background extension"
+        elif scene_info.get("has_sky"):
+            final_prompt = "soft light blue sky with subtle natural clouds, matching scenery continuation, photorealistic"
+        elif top_rgb[1] > top_rgb[0] * 1.05 and top_rgb[1] > top_rgb[2]:
+            final_prompt = "soft blurred natural green garden foliage bokeh, matching outdoor photography lighting, seamless background"
+        elif abs(top_rgb[0] - top_rgb[1]) < 18 and abs(top_rgb[1] - top_rgb[2]) < 18:
+            final_prompt = "clean photography studio background, soft diffused lighting, matching seamless backdrop"
         else:
-            final_prompt = "seamless matching background scenery continuation, high quality, photorealistic"
+            advice = scene_info.get("extension_advice", "seamless matching scenery continuation")
+            final_prompt = f"{advice}, natural soft lighting, photorealistic matching background"
+
+        # 3. Downsample pre-filled canvas to 512x512 for Cloudflare SD 1.5 inpainting
+        base_512 = base_bg.resize((512, 512), Image.Resampling.LANCZOS)
+        scale_x, scale_y = 512.0 / target_w, 512.0 / target_h
+        s_ox, s_oy = int(round(ox * scale_x)), int(round(oy * scale_y))
+        s_pw, s_ph = int(round(pw * scale_x)), int(round(ph * scale_y))
+
+        mask_np = np.zeros((512, 512), dtype=np.uint8)
+        overlap = 6
+        if ext_type == "horizontal":
+            if s_ox > 0:
+                mask_np[:, :min(512, s_ox + overlap)] = 255
+            if s_ox + s_pw < 512:
+                mask_np[:, max(0, s_ox + s_pw - overlap):] = 255
+        elif ext_type == "vertical":
+            if s_oy > 0:
+                mask_np[:min(512, s_oy + overlap), :] = 255
+            if s_oy + s_ph < 512:
+                mask_np[max(0, s_oy + s_ph - overlap):, :] = 255
+
+        buf_i, buf_m = io.BytesIO(), io.BytesIO()
+        base_512.save(buf_i, format="PNG")
+        Image.fromarray(mask_np).save(buf_m, format="PNG")
 
         url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/runwayml/stable-diffusion-v1-5-inpainting"
         headers = {"Authorization": f"Bearer {api_token}"}
@@ -406,26 +432,56 @@ def call_cloudflare_workers_ai_inpainting(
 
         res = requests.post(url, headers=headers, json=payload, timeout=25.0)
         if res.status_code != 200:
-            return None, f"Cloudflare API returned status {res.status_code}"
+            return base_bg, None
 
         gen_512 = Image.open(io.BytesIO(res.content)).convert("RGB")
-        cropped_target = gen_512.crop((box_x, box_y, box_x + box_w, box_y + box_h))
-        final_img = cropped_target.resize((target_w, target_h), Image.Resampling.LANCZOS)
+        gen_full = gen_512.resize((target_w, target_h), Image.Resampling.LANCZOS)
 
-        # Composite pristine untouched source
-        full_scale = min(target_w / float(orig_w), target_h / float(orig_h))
-        final_pw = max(1, int(round(orig_w * full_scale)))
-        final_ph = max(1, int(round(orig_h * full_scale)))
-        final_ox = (target_w - final_pw) // 2
-        final_oy = (target_h - final_ph) // 2
+        # 4. Color consistency validation: reject divergent hallucinations (e.g. cracked mud on green grass)
+        gen_np = np.array(gen_full).astype(np.float32)
+        base_np = np.array(base_bg).astype(np.float32)
 
-        pristine_full = source_img.resize((final_pw, final_ph), Image.Resampling.LANCZOS)
-        final_mask = Image.new("L", (final_pw, final_ph), 255)
-        if final_pw > 8 and final_ph > 8:
-            draw = ImageDraw.Draw(final_mask)
-            draw.rectangle([0, 0, final_pw - 1, final_ph - 1], outline=215, width=1)
+        if ext_type == "horizontal" and ox > 0:
+            left_diff = float(np.mean(np.abs(gen_np[:, :ox, :] - base_np[:, :ox, :])))
+            right_diff = float(np.mean(np.abs(gen_np[:, ox + pw:, :] - base_np[:, ox + pw:, :])))
+            avg_diff = (left_diff + right_diff) / 2.0
+            if avg_diff > 40.0:
+                final_bg = base_bg
+            else:
+                blended_np = np.clip(gen_np * 0.5 + base_np * 0.5, 0, 255).astype(np.uint8)
+                final_bg = Image.fromarray(blended_np)
+        elif ext_type == "vertical" and oy > 0:
+            top_diff = float(np.mean(np.abs(gen_np[:oy, :, :] - base_np[:oy, :, :])))
+            bot_diff = float(np.mean(np.abs(gen_np[oy + ph:, :, :] - base_np[oy + ph:, :, :])))
+            avg_diff = (top_diff + bot_diff) / 2.0
+            if avg_diff > 40.0:
+                final_bg = base_bg
+            else:
+                blended_np = np.clip(gen_np * 0.5 + base_np * 0.5, 0, 255).astype(np.uint8)
+                final_bg = Image.fromarray(blended_np)
+        else:
+            final_bg = base_bg
 
-        final_img.paste(pristine_full, (final_ox, final_oy), mask=final_mask)
+        # 5. Composite pristine original with smooth cosine feathering (no harsh borders)
+        final_img = final_bg.copy()
+        pristine_src = source_img.resize((pw, ph), Image.Resampling.LANCZOS)
+
+        feather = min(20, min(pw, ph) // 10)
+        if feather > 2:
+            comp_mask = np.ones((ph, pw), dtype=np.float32)
+            for i in range(min(feather, pw // 2)):
+                v = 0.5 * (1.0 - np.cos(np.pi * i / feather))
+                comp_mask[:, i] = np.minimum(comp_mask[:, i], v)
+                comp_mask[:, pw - 1 - i] = np.minimum(comp_mask[:, pw - 1 - i], v)
+            for j in range(min(feather, ph // 2)):
+                v = 0.5 * (1.0 - np.cos(np.pi * j / feather))
+                comp_mask[j, :] = np.minimum(comp_mask[j, :], v)
+                comp_mask[ph - 1 - j, :] = np.minimum(comp_mask[ph - 1 - j, :], v)
+            comp_mask_im = Image.fromarray((comp_mask * 255).astype(np.uint8))
+            final_img.paste(pristine_src, (ox, oy), mask=comp_mask_im)
+        else:
+            final_img.paste(pristine_src, (ox, oy))
+
         return final_img, None
 
     except Exception as e:
@@ -473,6 +529,8 @@ def expand_background_groq(
             target_h=target_h,
             prompt=prompt_hint,
             vision_info=cached_analysis,
+            bg_color_hex=bg_color_hex,
+            is_transparent=is_transparent,
         )
         if cf_img is not None:
             return cf_img, {
