@@ -42,6 +42,8 @@ def get_configured_ai_provider() -> str:
     except Exception:
         pass
 
+    if is_cloudflare_enabled():
+        return "cloudflare"
     if os.environ.get("GROQ_API_KEY"):
         return "groq"
     return "studio"
@@ -322,6 +324,114 @@ def call_groq_vision_guided_expansion(
         return None, None, f"Groq vision-assisted expansion error: {str(e)[:120]}"
 
 
+
+
+def is_cloudflare_enabled() -> bool:
+    """Check if Cloudflare Workers AI credentials are configured."""
+    return bool(os.environ.get("CLOUDFLARE_ACCOUNT_ID")) and bool(os.environ.get("CLOUDFLARE_API_TOKEN"))
+
+
+def call_cloudflare_workers_ai_inpainting(
+    source_img: Image.Image,
+    target_w: int,
+    target_h: int,
+    prompt: Optional[str] = None,
+    vision_info: Optional[Dict[str, Any]] = None,
+) -> Tuple[Optional[Image.Image], Optional[str]]:
+    """
+    Call Cloudflare Workers AI inpainting model (@cf/runwayml/stable-diffusion-v1-5-inpainting)
+    to generate authentic generative AI background outpainting.
+    Composites pristine original subject at full resolution.
+    """
+    account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID")
+    api_token = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
+    if not account_id or not api_token:
+        return None, "Cloudflare credentials not configured."
+
+    try:
+        import requests
+        orig_w, orig_h = source_img.size
+        target_ratio = target_w / float(target_h)
+        base_size = 512
+
+        if target_ratio >= 1.0:
+            box_w = base_size
+            box_h = int(round(base_size / target_ratio))
+        else:
+            box_h = base_size
+            box_w = int(round(base_size * target_ratio))
+
+        box_x = (base_size - box_w) // 2
+        box_y = (base_size - box_h) // 2
+
+        scale = min(box_w / float(orig_w), box_h / float(orig_h))
+        pw = max(1, int(round(orig_w * scale)))
+        ph = max(1, int(round(orig_h * scale)))
+        ox = (box_w - pw) // 2
+        oy = (box_h - ph) // 2
+
+        placed_x = box_x + ox
+        placed_y = box_y + oy
+
+        # Initial canvas
+        canvas = Image.new("RGB", (base_size, base_size), (240, 240, 245))
+        placed_src = source_img.resize((pw, ph), Image.Resampling.LANCZOS)
+        canvas.paste(placed_src, (placed_x, placed_y))
+
+        # Mask: 255 for generation areas, 0 for protected subject
+        mask = Image.new("L", (base_size, base_size), 255)
+        mask.paste(Image.new("L", (max(1, pw - 4), max(1, ph - 4)), 0), (placed_x + 2, placed_y + 2))
+
+        buf_i = io.BytesIO()
+        canvas.save(buf_i, format="PNG")
+        buf_m = io.BytesIO()
+        mask.save(buf_m, format="PNG")
+
+        if prompt:
+            final_prompt = prompt
+        elif vision_info:
+            desc = vision_info.get("subject_description", "photograph subject")
+            advice = vision_info.get("extension_advice", "seamless matching scenery continuation")
+            final_prompt = f"{desc}, {advice}, high quality, photorealistic, seamless background extension"
+        else:
+            final_prompt = "seamless matching background scenery continuation, high quality, photorealistic"
+
+        url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/runwayml/stable-diffusion-v1-5-inpainting"
+        headers = {"Authorization": f"Bearer {api_token}"}
+        payload = {
+            "prompt": final_prompt,
+            "image": list(buf_i.getvalue()),
+            "mask": list(buf_m.getvalue())
+        }
+
+        res = requests.post(url, headers=headers, json=payload, timeout=25.0)
+        if res.status_code != 200:
+            return None, f"Cloudflare API returned status {res.status_code}"
+
+        gen_512 = Image.open(io.BytesIO(res.content)).convert("RGB")
+        cropped_target = gen_512.crop((box_x, box_y, box_x + box_w, box_y + box_h))
+        final_img = cropped_target.resize((target_w, target_h), Image.Resampling.LANCZOS)
+
+        # Composite pristine untouched source
+        full_scale = min(target_w / float(orig_w), target_h / float(orig_h))
+        final_pw = max(1, int(round(orig_w * full_scale)))
+        final_ph = max(1, int(round(orig_h * full_scale)))
+        final_ox = (target_w - final_pw) // 2
+        final_oy = (target_h - final_ph) // 2
+
+        pristine_full = source_img.resize((final_pw, final_ph), Image.Resampling.LANCZOS)
+        final_mask = Image.new("L", (final_pw, final_ph), 255)
+        if final_pw > 8 and final_ph > 8:
+            draw = ImageDraw.Draw(final_mask)
+            draw.rectangle([0, 0, final_pw - 1, final_ph - 1], outline=215, width=1)
+
+        final_img.paste(pristine_full, (final_ox, final_oy), mask=final_mask)
+        return final_img, None
+
+    except Exception as e:
+        return None, f"Cloudflare Workers AI error: {str(e)[:120]}"
+
+
 def expand_background_groq(
     img: Image.Image,
     target_w: int,
@@ -355,6 +465,29 @@ def expand_background_groq(
         }
         return resized, meta
 
+    # 1. If Cloudflare Workers AI credentials are configured, generate genuine generative AI inpainting
+    if is_cloudflare_enabled():
+        cf_img, cf_err = call_cloudflare_workers_ai_inpainting(
+            source_img=img,
+            target_w=target_w,
+            target_h=target_h,
+            prompt=prompt_hint,
+            vision_info=cached_analysis,
+        )
+        if cf_img is not None:
+            return cf_img, {
+                "status": "ready",
+                "method": "ai",
+                "provider": "cloudflare_workers_ai",
+                "analysis": cached_analysis,
+                "is_generative_ai": True,
+                "canvas_size": [target_w, target_h],
+                "placed_box": [ox, oy, ox + pw, oy + ph],
+                "product_preserved": True,
+                "error_message": None,
+            }
+
+    # 2. Otherwise use Groq Vision Guided Adaptive Background Extension
     gen_img, vision_info, err_msg = call_groq_vision_guided_expansion(
         source_img=img,
         target_w=target_w,
