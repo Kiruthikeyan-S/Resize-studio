@@ -400,14 +400,40 @@ class OpenAIOutpaintingProvider(BaseOutpaintingProvider):
                 f"Subject: {subject_desc}. Maintain realistic photographic perspective. No borders, no frames, no duplicated subjects, no watermarks, no text."
             )
 
-            response = client.images.edit(
-                image=("image.png", img_bytes, "image/png"),
-                mask=("mask.png", mask_bytes, "image/png"),
-                prompt=edit_prompt,
-                n=1,
-                size="1024x1024",
-                response_format="b64_json"
-            )
+            models_to_try = [
+                "gpt-image-1-mini",
+                "gpt-image-1",
+                "gpt-image-2",
+                "dall-e-2",
+            ]
+            response = None
+            last_model_err = None
+            for model_name in models_to_try:
+                try:
+                    response = client.images.edit(
+                        model=model_name,
+                        image=("image.png", img_bytes, "image/png"),
+                        mask=("mask.png", mask_bytes, "image/png"),
+                        prompt=edit_prompt,
+                        n=1,
+                        size="1024x1024",
+                    )
+                    if response and response.data:
+                        break
+                except Exception as m_err:
+                    last_model_err = m_err
+                    err_str = str(m_err)
+                    if "credit_balance_exhausted" in err_str or "insufficient_quota" in err_str:
+                        return None, "OpenAI account has no credits remaining (credit balance exhausted). Please add credits at https://platform.openai.com/settings/organization/billing."
+                    if "invalid_api_key" in err_str or "401" in err_str:
+                        return None, "Invalid OpenAI API key configured in backend/.env."
+                    continue
+
+            if response is None or not response.data:
+                err_msg = str(last_model_err or "No response from OpenAI")
+                if "credit_balance_exhausted" in err_msg or "insufficient_quota" in err_msg:
+                    return None, "OpenAI account has no credits remaining (credit balance exhausted). Please add credits at https://platform.openai.com/settings/organization/billing."
+                return None, f"OpenAI outpainting error: {err_msg[:120]}"
 
             generated_square = None
             if response.data and len(response.data) > 0:
