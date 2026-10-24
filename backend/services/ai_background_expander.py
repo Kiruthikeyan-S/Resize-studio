@@ -53,7 +53,8 @@ def calculate_expansion_canvas(
     orig_w: int,
     orig_h: int,
     target_w: int,
-    target_h: int
+    target_h: int,
+    source_img: Optional[Image.Image] = None,
 ) -> Tuple[int, int, int, int, str]:
     """
     Calculate proportional placement of source image within target canvas.
@@ -85,7 +86,23 @@ def calculate_expansion_canvas(
         if placed_h > target_h:
             placed_h = target_h
         offset_x = 0
-        offset_y = (target_h - placed_h) // 2
+        
+        # Check if bottom of subject is cut off by comparing variance
+        bottom_cut_off = False
+        if source_img is not None:
+            try:
+                np_src = np.array(source_img.convert("RGB"))
+                top_v = float(np.var(np_src[:12, :, :]))
+                bot_v = float(np.var(np_src[-12:, :, :]))
+                if bot_v > top_v * 1.5 and bot_v > 1500.0:
+                    bottom_cut_off = True
+            except Exception:
+                pass
+                
+        if bottom_cut_off:
+            offset_y = target_h - placed_h  # Align to bottom frame naturally
+        else:
+            offset_y = (target_h - placed_h) // 2
         return placed_w, placed_h, offset_x, offset_y, "vertical"
 
 
@@ -104,14 +121,12 @@ def studio_texture_background_expansion(
     **kwargs
 ) -> Image.Image:
     """
-    High-fidelity background expansion:
-    1. Studio/Product: For uniform or solid studio backdrops, extends seamless matching studio tone.
-    2. Scenery/Photographs: Uses perimeter-isolated 2D multi-scale atmospheric diffusion:
-       - Samples exclusively from the outermost perimeter strips (bounded by subject bounding box).
-       - Never mirrors central subjects (no duplicated towers, people, vehicles).
-       - Uses 2D Gaussian blur + cubic Hermite blending to eliminate barcode scanlines.
-       - Adds subtle atmospheric micro-texture to blend naturally with photography.
-    3. Re-composites pristine untouched source pixels with anti-aliasing.
+    High-fidelity stripe-free background expansion:
+    1. Uniform/Studio backdrops: Extends seamless matching studio tone.
+    2. Scenery/Photographs: Uses edge-replicated multi-scale atmospheric diffusion:
+       - Never mirrors thin strips (no accordion barcode scanlines, comb ripples, or repeating patterns).
+       - Uses 2D Gaussian blur + cubic Hermite blending to ensure smooth monotonic gradient transitions.
+       - Composites pristine original source pixels with anti-aliased smooth feathering.
     """
     is_rgba = (img_rgb.mode == "RGBA")
     if is_transparent and is_rgba:
@@ -133,8 +148,6 @@ def studio_texture_background_expansion(
         if placed_img.size != (target_w, target_h):
             return placed_img.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
         return placed_img
-
-    canvas_np = np.zeros((target_h, target_w, 3), dtype=np.uint8)
 
     info = vision_info or {}
     scene_type = info.get("scene_type", "scenery")
@@ -159,130 +172,72 @@ def studio_texture_background_expansion(
             except Exception:
                 custom_bg = None
 
+    canvas_np = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+
     # Handle solid/studio backgrounds
     if custom_bg is not None or scene_type in ["studio_solid", "graphic"] or perim_std < 5.0:
         fill_color = custom_bg if custom_bg is not None else tuple(int(c) for c in perim_median)
         canvas_np[:, :] = fill_color
     else:
-        # Determine safe strip bounds using vision subject bounding box
-        # subject_box format: [ymin%, xmin%, ymax%, xmax%]
-        subj_box = info.get("subject_box") or [10, 10, 90, 90]
-        try:
-            ymin_pct = subj_box[0] / 100.0 if len(subj_box) >= 4 else 0.15
-            xmin_pct = subj_box[1] / 100.0 if len(subj_box) >= 4 else 0.15
-            ymax_pct = subj_box[2] / 100.0 if len(subj_box) >= 4 else 0.85
-            xmax_pct = subj_box[3] / 100.0 if len(subj_box) >= 4 else 0.85
-        except Exception:
-            ymin_pct, xmin_pct, ymax_pct, xmax_pct = 0.15, 0.15, 0.85, 0.85
+        # Edge-replicated border canvas (eliminates periodic accordion barcode scanlines completely!)
+        canvas_np = cv2.copyMakeBorder(placed_np, pad_top, pad_bottom, pad_left, pad_right, cv2.BORDER_REPLICATE)
 
-        # Maximum width of edge strip we can sample without touching central subject
-        max_left_strip = max(8, min(int(round(placed_w * xmin_pct * 0.7)), placed_w // 10))
-        max_right_strip = max(8, min(int(round(placed_w * (1.0 - xmax_pct) * 0.7)), placed_w // 10))
-        max_top_strip = max(8, min(int(round(placed_h * ymin_pct * 0.7)), placed_h // 10))
-        max_bot_strip = max(8, min(int(round(placed_h * (1.0 - ymax_pct) * 0.7)), placed_h // 10))
+        # Multi-scale atmospheric diffusion across expansion wings
+        kw = max(31, ((pad_left + pad_right) // 3) | 1) if (pad_left + pad_right) > 0 else 31
+        kh = max(31, ((pad_top + pad_bottom) // 3) | 1) if (pad_top + pad_bottom) > 0 else 31
+        diffused = cv2.GaussianBlur(canvas_np, (kw, kh), 0)
 
-        # 1. HORIZONTAL EXTENSION (WINGS)
-        if pad_left > 0 or pad_right > 0:
-            if pad_left > 0:
-                strip_w = max(8, min(36, max_left_strip))
-                left_strip = placed_np[:, :strip_w, :]
+        # Hermite smoothstep blend on wings
+        if pad_left > 0:
+            t = np.linspace(1.0, 0.0, pad_left, dtype=np.float32)
+            w_b = (t * t * (3.0 - 2.0 * t))[None, :, None]
+            canvas_np[:, :pad_left] = (
+                canvas_np[:, :pad_left].astype(np.float32) * (1.0 - w_b * 0.95) +
+                diffused[:, :pad_left].astype(np.float32) * (w_b * 0.95)
+            ).astype(np.uint8)
 
-                # Seamless reflection of ONLY the outermost thin edge background strip
-                left_padded = cv2.copyMakeBorder(left_strip, 0, 0, pad_left, 0, cv2.BORDER_REFLECT_101)[:, :pad_left, :]
+        if pad_right > 0:
+            t = np.linspace(0.0, 1.0, pad_right, dtype=np.float32)
+            w_b = (t * t * (3.0 - 2.0 * t))[None, :, None]
+            canvas_np[:, target_w - pad_right:] = (
+                canvas_np[:, target_w - pad_right:].astype(np.float32) * (1.0 - w_b * 0.95) +
+                diffused[:, target_w - pad_right:].astype(np.float32) * (w_b * 0.95)
+            ).astype(np.uint8)
 
-                # 2D Multi-scale atmospheric diffusion (completely eliminates horizontal barcode stripes)
-                kw = max(31, (pad_left // 6) | 1)
-                kh = max(31, (target_h // 20) | 1)
-                diffused = cv2.GaussianBlur(left_padded, (kw, kh), 0)
+        if pad_top > 0:
+            t = np.linspace(1.0, 0.0, pad_top, dtype=np.float32)
+            w_b = (t * t * (3.0 - 2.0 * t))[:, None, None]
+            canvas_np[:pad_top, :] = (
+                canvas_np[:pad_top, :].astype(np.float32) * (1.0 - w_b * 0.95) +
+                diffused[:pad_top, :].astype(np.float32) * (w_b * 0.95)
+            ).astype(np.uint8)
 
-                dist_map = np.linspace(1.0, 0.0, pad_left, dtype=np.float32)
-                w_blend = (dist_map ** 2 * (3.0 - 2.0 * dist_map))[None, :, None]
+        if pad_bottom > 0:
+            t = np.linspace(0.0, 1.0, pad_bottom, dtype=np.float32)
+            w_b = (t * t * (3.0 - 2.0 * t))[:, None, None]
+            canvas_np[target_h - pad_bottom:, :] = (
+                canvas_np[target_h - pad_bottom:, :].astype(np.float32) * (1.0 - w_b * 0.95) +
+                diffused[target_h - pad_bottom:, :].astype(np.float32) * (w_b * 0.95)
+            ).astype(np.uint8)
 
-                left_wing = (
-                    left_padded.astype(np.float32) * (1.0 - w_blend * 0.90) +
-                    diffused.astype(np.float32) * (w_blend * 0.90)
-                )
-
-                # Micro-texture noise to eliminate flat artificial gradients
-                np.random.seed(42)
-                noise = np.random.normal(0, 1.2, left_wing.shape).astype(np.float32)
-                canvas_np[:, :pad_left] = np.clip(left_wing + noise, 0, 255).astype(np.uint8)
-
-            if pad_right > 0:
-                strip_w = max(8, min(36, max_right_strip))
-                right_strip = placed_np[:, -strip_w:, :]
-
-                right_padded = cv2.copyMakeBorder(right_strip, 0, 0, 0, pad_right, cv2.BORDER_REFLECT_101)[:, strip_w:strip_w + pad_right, :]
-
-                kw = max(31, (pad_right // 6) | 1)
-                kh = max(31, (target_h // 20) | 1)
-                diffused = cv2.GaussianBlur(right_padded, (kw, kh), 0)
-
-                dist_map = np.linspace(0.0, 1.0, pad_right, dtype=np.float32)
-                w_blend = (dist_map ** 2 * (3.0 - 2.0 * dist_map))[None, :, None]
-
-                right_wing = (
-                    right_padded.astype(np.float32) * (1.0 - w_blend * 0.90) +
-                    diffused.astype(np.float32) * (w_blend * 0.90)
-                )
-
-                np.random.seed(43)
-                noise = np.random.normal(0, 1.2, right_wing.shape).astype(np.float32)
-                canvas_np[:, target_w - pad_right:] = np.clip(right_wing + noise, 0, 255).astype(np.uint8)
-
-        # 2. VERTICAL EXTENSION (MARGINS)
-        if pad_top > 0 or pad_bottom > 0:
-            if pad_top > 0:
-                strip_h = max(8, min(36, max_top_strip))
-                top_strip = placed_np[:strip_h, :, :]
-
-                top_padded = cv2.copyMakeBorder(top_strip, pad_top, 0, 0, 0, cv2.BORDER_REFLECT_101)[:pad_top, :, :]
-
-                kw = max(31, (target_w // 20) | 1)
-                kh = max(31, (pad_top // 6) | 1)
-                diffused = cv2.GaussianBlur(top_padded, (kw, kh), 0)
-
-                dist_map = np.linspace(1.0, 0.0, pad_top, dtype=np.float32)
-                w_blend = (dist_map ** 2 * (3.0 - 2.0 * dist_map))[:, None, None]
-
-                top_wing = (
-                    top_padded.astype(np.float32) * (1.0 - w_blend * 0.90) +
-                    diffused.astype(np.float32) * (w_blend * 0.90)
-                )
-                canvas_np[:pad_top, :] = np.clip(top_wing, 0, 255).astype(np.uint8)
-
-            if pad_bottom > 0:
-                strip_h = max(8, min(36, max_bot_strip))
-                bot_strip = placed_np[-strip_h:, :, :]
-
-                bot_padded = cv2.copyMakeBorder(bot_strip, 0, pad_bottom, 0, 0, cv2.BORDER_REFLECT_101)[strip_h:strip_h + pad_bottom, :, :]
-
-                kw = max(31, (target_w // 20) | 1)
-                kh = max(31, (pad_bottom // 6) | 1)
-                diffused = cv2.GaussianBlur(bot_padded, (kw, kh), 0)
-
-                dist_map = np.linspace(0.0, 1.0, pad_bottom, dtype=np.float32)
-                w_blend = (dist_map ** 2 * (3.0 - 2.0 * dist_map))[:, None, None]
-
-                bot_wing = (
-                    bot_padded.astype(np.float32) * (1.0 - w_blend * 0.90) +
-                    diffused.astype(np.float32) * (w_blend * 0.90)
-                )
-                canvas_np[target_h - pad_bottom:, :] = np.clip(bot_wing, 0, 255).astype(np.uint8)
-
-    # 3. COMPOSITE PRISTINE ORIGINAL PIXELS
-    canvas_np[offset_y:offset_y + placed_h, offset_x:offset_x + placed_w] = placed_np
+    # 3. Composite pristine original pixels with smooth anti-aliased cosine feathering
     res_img = Image.fromarray(canvas_np)
+    feather = min(12, min(placed_w, placed_h) // 10)
+    if feather > 2:
+        comp_mask = np.ones((placed_h, placed_w), dtype=np.float32)
+        for i in range(feather):
+            v = 0.5 * (1.0 - np.cos(np.pi * i / feather))
+            comp_mask[:, i] = np.minimum(comp_mask[:, i], v)
+            comp_mask[:, placed_w - 1 - i] = np.minimum(comp_mask[:, placed_w - 1 - i], v)
+        for j in range(feather):
+            v = 0.5 * (1.0 - np.cos(np.pi * j / feather))
+            comp_mask[j, :] = np.minimum(comp_mask[j, :], v)
+            comp_mask[placed_h - 1 - j, :] = np.minimum(comp_mask[placed_h - 1 - j, :], v)
+        res_img.paste(placed_img, (offset_x, offset_y), mask=Image.fromarray((comp_mask * 255).astype(np.uint8)))
+    else:
+        res_img.paste(placed_img, (offset_x, offset_y))
 
-    # Feather edge border 1px to avoid rasterization gap
-    mask_im = Image.new("L", (placed_w, placed_h), 255)
-    if placed_w > 8 and placed_h > 8:
-        draw = ImageDraw.Draw(mask_im)
-        draw.rectangle([0, 0, placed_w - 1, placed_h - 1], outline=215, width=1)
-
-    res_img.paste(placed_img, (offset_x, offset_y), mask=mask_im)
     return res_img
-
 
 def call_groq_vision_guided_expansion(
     source_img: Image.Image,
