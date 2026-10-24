@@ -286,6 +286,122 @@ def is_cloudflare_enabled() -> bool:
     return bool(os.environ.get("CLOUDFLARE_ACCOUNT_ID")) and bool(os.environ.get("CLOUDFLARE_API_TOKEN"))
 
 
+def generate_flux_realistic_background(
+    source_img: Image.Image,
+    prompt: Optional[str] = None,
+    vision_info: Optional[Dict[str, Any]] = None,
+) -> Optional[Image.Image]:
+    """
+    Generate an authentic, high-quality, photorealistic background matching the source image environment
+    using Cloudflare Workers AI FLUX.1 Schnell (@cf/black-forest-labs/flux-1-schnell).
+    """
+    account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID")
+    api_token = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
+    if not account_id or not api_token:
+        return None
+
+    try:
+        import requests
+        import numpy as np
+        from services.groq_vision import _local_scene_heuristic
+
+        if prompt:
+            flux_prompt = prompt
+        elif vision_info and vision_info.get("analysis_source") == "groq_vision":
+            adv = vision_info.get("extension_advice", "seamless matching scenery continuation")
+            flux_prompt = f"A realistic natural photography background matching {adv}, subtle atmospheric lighting, clean natural environment, empty center, no products, no animals, no text, no logos"
+        else:
+            scene_info = vision_info or _local_scene_heuristic(source_img)
+            np_src = np.array(source_img.convert("RGB"))
+            bw = max(2, min(16, min(source_img.width, source_img.height) // 16))
+            top_rgb = np.mean(np_src[:bw, :, :], axis=(0, 1))
+
+            if scene_info.get("has_sky") or (top_rgb[2] > top_rgb[0] * 1.05 and top_rgb[2] > 100):
+                flux_prompt = "A realistic photography background of soft light cyan blue sky and delicate white clouds, natural outdoor morning light, wide vista, empty center, no birds, no animals, no text, no logos"
+            elif top_rgb[1] > top_rgb[0] * 1.04 and top_rgb[1] > top_rgb[2]:
+                flux_prompt = "A realistic macro nature photography background of soft blurred garden foliage, lush green leaves, delicate flower petals, warm natural sunlight and subtle garden bokeh, empty center, no insects, no animals, no text, no logos"
+            elif abs(top_rgb[0] - top_rgb[1]) < 18 and abs(top_rgb[1] - top_rgb[2]) < 18:
+                flux_prompt = "A realistic commercial product photography background, seamless clean studio with soft diffused lighting, subtle realistic shadows, empty center, no products, no text, no logos"
+            else:
+                flux_prompt = "A realistic scenic landscape photography background of majestic mountain peaks, distant horizons, natural sky and rugged terrain, wide cinematic vista, empty center, no text, no logos"
+
+        url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/black-forest-labs/flux-1-schnell"
+        headers = {"Authorization": f"Bearer {api_token}", "Content-Type": "application/json"}
+        payload = {"prompt": flux_prompt, "steps": 4}
+        res = requests.post(url, headers=headers, json=payload, timeout=30.0)
+        if res.status_code == 200:
+            data = res.json()
+            b64 = data.get("result", {}).get("image")
+            if b64:
+                return Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
+        return None
+    except Exception:
+        return None
+
+
+def apply_realistic_background_to_ratio(
+    source_img: Image.Image,
+    bg_master: Image.Image,
+    target_w: int,
+    target_h: int,
+) -> Image.Image:
+    """
+    Apply a realistic AI background to any target aspect ratio, harmonizing lighting and feathering edges.
+    """
+    orig_w, orig_h = source_img.size
+    pw, ph, ox, oy, ext_type = calculate_expansion_canvas(orig_w, orig_h, target_w, target_h, source_img=source_img)
+
+    if ext_type == "none" or (ox == 0 and oy == 0):
+        return source_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
+
+    # Scale AI background to fill target dimensions
+    scale_bg = max(target_w / float(bg_master.width), target_h / float(bg_master.height))
+    bg_w = int(round(bg_master.width * scale_bg))
+    bg_h = int(round(bg_master.height * scale_bg))
+    bg_scaled = bg_master.resize((bg_w, bg_h), Image.Resampling.LANCZOS)
+
+    crop_x = (bg_w - target_w) // 2
+    crop_y = (bg_h - target_h) // 2
+    ai_canvas = bg_scaled.crop((crop_x, crop_y, crop_x + target_w, crop_y + target_h))
+
+    placed_src = source_img.resize((pw, ph), Image.Resampling.LANCZOS)
+
+    # Harmonize ambient lighting/tint between background and source borders
+    src_np = np.array(placed_src).astype(np.float32)
+    bg_np = np.array(ai_canvas).astype(np.float32)
+    bw = max(4, min(16, min(pw, ph) // 16))
+    src_border = np.concatenate([
+        src_np[:bw, :, :].reshape(-1, 3),
+        src_np[-bw:, :, :].reshape(-1, 3),
+        src_np[:, :bw, :].reshape(-1, 3),
+        src_np[:, -bw:, :].reshape(-1, 3),
+    ], axis=0)
+    src_mean = np.mean(src_border, axis=0)
+    bg_mean = np.mean(bg_np, axis=(0, 1))
+
+    shift = src_mean - bg_mean
+    bg_shifted = np.clip(bg_np + shift * 0.65, 0, 255).astype(np.uint8)
+    ai_canvas = Image.fromarray(bg_shifted)
+
+    # Smooth cosine feathering
+    feather = min(20, min(pw, ph) // 10)
+    if feather > 2:
+        comp_mask = np.ones((ph, pw), dtype=np.float32)
+        for i in range(feather):
+            v = 0.5 * (1.0 - np.cos(np.pi * i / feather))
+            comp_mask[:, i] = np.minimum(comp_mask[:, i], v)
+            comp_mask[:, pw - 1 - i] = np.minimum(comp_mask[:, pw - 1 - i], v)
+        for j in range(feather):
+            v = 0.5 * (1.0 - np.cos(np.pi * j / feather))
+            comp_mask[j, :] = np.minimum(comp_mask[j, :], v)
+            comp_mask[ph - 1 - j, :] = np.minimum(comp_mask[ph - 1 - j, :], v)
+        ai_canvas.paste(placed_src, (ox, oy), mask=Image.fromarray((comp_mask * 255).astype(np.uint8)))
+    else:
+        ai_canvas.paste(placed_src, (ox, oy))
+
+    return ai_canvas
+
+
 def call_cloudflare_workers_ai_inpainting(
     source_img: Image.Image,
     target_w: int,
@@ -452,6 +568,7 @@ def expand_background_groq(
     bg_color_hex: str = "#F8FAFC",
     is_transparent: bool = False,
     allow_opencv_fallback: bool = True,
+    flux_bg_master: Optional[Image.Image] = None,
     **kwargs
 ) -> Tuple[Optional[Image.Image], Dict[str, Any]]:
     """
@@ -476,8 +593,34 @@ def expand_background_groq(
         }
         return resized, meta
 
-    # 1. If Cloudflare Workers AI credentials are configured, generate genuine generative AI inpainting
+    # 1. If Cloudflare Workers AI credentials are configured, use FLUX.1 Schnell realistic background
     if is_cloudflare_enabled():
+        if flux_bg_master is None:
+            flux_bg_master = generate_flux_realistic_background(
+                source_img=img,
+                prompt=prompt_hint,
+                vision_info=cached_analysis,
+            )
+
+        if flux_bg_master is not None:
+            ai_img = apply_realistic_background_to_ratio(
+                source_img=img,
+                bg_master=flux_bg_master,
+                target_w=target_w,
+                target_h=target_h,
+            )
+            return ai_img, {
+                "status": "ready",
+                "method": "ai",
+                "provider": "cloudflare_flux",
+                "analysis": cached_analysis,
+                "is_generative_ai": True,
+                "canvas_size": [target_w, target_h],
+                "placed_box": [ox, oy, ox + pw, oy + ph],
+                "product_preserved": True,
+                "error_message": None,
+            }
+
         cf_img, cf_err = call_cloudflare_workers_ai_inpainting(
             source_img=img,
             target_w=target_w,
