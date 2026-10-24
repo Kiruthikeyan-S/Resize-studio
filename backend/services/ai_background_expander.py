@@ -29,7 +29,12 @@ logger = logging.getLogger(__name__)
 # Load environment variables from backend/.env if present
 try:
     import dotenv
-    dotenv.load_dotenv()
+    _curr_dir = os.path.dirname(os.path.abspath(__file__))
+    _backend_dir = os.path.dirname(_curr_dir)
+    for _ep in [os.path.join(_backend_dir, '.env'), os.path.join(os.path.dirname(_backend_dir), '.env'), '.env']:
+        if os.path.exists(_ep):
+            dotenv.load_dotenv(_ep, override=False)
+            break
 except Exception:
     pass
 
@@ -327,9 +332,14 @@ def call_cloudflare_workers_ai_inpainting(
     is_transparent: bool = False,
 ) -> Tuple[Optional[Image.Image], Optional[str]]:
     """
-    Call Cloudflare Workers AI inpainting model (@cf/runwayml/stable-diffusion-v1-5-inpainting)
-    with model-compatible dimensions preserving the target aspect ratio (no 512x512 squeezing).
-    Composites pristine original subject at full resolution.
+    Call Cloudflare Workers AI inpainting model with model-compatible dimensions
+    preserving the target aspect ratio (no 512x512 squeezing).
+    Features:
+    1. Atmospheric pre-diffused outer wings: prevents duplicate subject hallucinations (extra butterflies/birds/wheels).
+    2. Comprehensive scene-aware prompt + strict negative prompt: prevents tripods, marble tiles, mountains, and black bars.
+    3. Blank/black output guard: automatically rejects filtered or corrupted all-black frames.
+    4. Anti-aliased cosine-feathered blending: eliminates harsh rectangular cut seams.
+    5. Preserves pristine customer-approved cropped image at 100% resolution.
     Returns: (generated_image, error_message)
     """
     account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID")
@@ -359,19 +369,39 @@ def call_cloudflare_workers_ai_inpainting(
         pad_left, pad_right = ox, max(0, work_w - (ox + pw))
         pad_top, pad_bottom = oy, max(0, work_h - (oy + ph))
 
-        # 3. Canvas setup: pre-fill outer wings with edge-replication so inpainting model
-        # has natural color and lighting context rather than arbitrary black/grey
+        # 3. Canvas setup: pre-fill outer wings with edge-replication and atmospheric diffusion.
+        # Diffusing the outer wings removes sharp subject edge fragments (like butterfly wing tips or car wheels),
+        # so the inpainting model sees clean ambient color and lighting rather than an object to duplicate.
         canvas_np = cv2.copyMakeBorder(placed_np, pad_top, pad_bottom, pad_left, pad_right, cv2.BORDER_REPLICATE)
+        kw = max(31, ((pad_left + pad_right) // 3) | 1) if (pad_left + pad_right) > 0 else 31
+        kh = max(31, ((pad_top + pad_bottom) // 3) | 1) if (pad_top + pad_bottom) > 0 else 31
+        diffused = cv2.GaussianBlur(canvas_np, (kw, kh), 0)
+
+        if pad_top > 0:
+            canvas_np[:pad_top, :] = diffused[:pad_top, :]
+        if pad_bottom > 0:
+            canvas_np[work_h - pad_bottom:, :] = diffused[work_h - pad_bottom:, :]
+        if pad_left > 0:
+            canvas_np[:, :pad_left] = diffused[:, :pad_left]
+        if pad_right > 0:
+            canvas_np[:, work_w - pad_right:] = diffused[:, work_w - pad_right:]
+
         canvas = Image.fromarray(canvas_np)
 
         # 4. Inpainting mask: 255 (generate) on the extended canvas, 0 (protect) on original subject
-        mask = Image.new("L", (work_w, work_h), 255)
-        # Protect subject with 2px margin for edge continuity
-        safe_pw = max(1, pw - 4)
-        safe_ph = max(1, ph - 4)
-        mask.paste(Image.new("L", (safe_pw, safe_ph), 0), (ox + 2, oy + 2))
+        # Include a 4px transition overlap so the inpainting boundary merges seamlessly
+        mask_np = np.zeros((work_h, work_w), dtype=np.uint8)
+        if pad_top > 0:
+            mask_np[:pad_top + 4, :] = 255
+        if pad_bottom > 0:
+            mask_np[work_h - pad_bottom - 4:, :] = 255
+        if pad_left > 0:
+            mask_np[:, :pad_left + 4] = 255
+        if pad_right > 0:
+            mask_np[:, work_w - pad_right - 4:] = 255
+        mask = Image.fromarray(mask_np)
 
-        # 5. Extract scene information for an accurate prompt
+        # 5. Extract scene information for accurate prompt and negative prompt
         scene_info = vision_info or _local_scene_heuristic(source_img)
         top_hex = scene_info.get("top_color_hex", "#808080").lstrip("#")
         bot_hex = scene_info.get("bottom_color_hex", "#808080").lstrip("#")
@@ -381,26 +411,46 @@ def call_cloudflare_workers_ai_inpainting(
         except Exception:
             top_rgb, bot_rgb = (128, 128, 128), (128, 128, 128)
 
+        # Universal negative prompt preventing duplicate objects, equipment, and artifacts
+        universal_negative = (
+            "duplicate subject, extra subjects, second animal, second bird, second butterfly, second vehicle, second car, "
+            "tripod, camera equipment, studio lights, softbox, stand, umbrella, lamps, furniture, marble tiles, floor tiles, "
+            "mountains, rocky terrain, unrelated scenery, text, watermark, logo, border, black bars, dark frame, seam, "
+            "split screen, collage, multi-panel, discontinuous composition, distortion"
+        )
+
         if prompt:
             final_prompt = prompt
-        elif scene_info.get("has_sky") or (top_rgb[2] > top_rgb[0] * 1.05 and top_rgb[2] > 100):
-            final_prompt = "soft light blue sky with subtle natural clouds, matching scenery continuation, photorealistic, high quality"
+            final_negative = universal_negative
+        elif scene_info.get("has_sky") or (top_rgb[2] > top_rgb[0] * 1.05 and top_rgb[2] > 95):
+            final_prompt = "soft natural sky with smooth diffused light clouds, out of focus matching environment, clean seamless empty backdrop, photorealistic"
+            final_negative = "mountains, rocks, trees, ground, hills, landscape, duplicate bird, animal, person, tripod, equipment, text, watermark, split scene, seam"
         elif top_rgb[1] > top_rgb[0] * 1.04 and top_rgb[1] > top_rgb[2]:
-            final_prompt = "soft blurred natural green garden foliage bokeh, delicate outdoor morning lighting, seamless macro photography background, high quality"
-        elif abs(top_rgb[0] - top_rgb[1]) < 18 and abs(top_rgb[1] - top_rgb[2]) < 18:
-            final_prompt = "clean photography studio background, soft diffused lighting, matching seamless backdrop, high quality"
+            final_prompt = "soft blurred natural garden foliage bokeh, delicate warm outdoor morning lighting, seamless macro photography background, photorealistic"
+            final_negative = "duplicate animal, insect, butterfly, flower, text, watermark, mountains, buildings, split frame, seam"
+        elif abs(top_rgb[0] - top_rgb[1]) < 18 and abs(top_rgb[1] - top_rgb[2]) < 18 and np.std(top_rgb) < 10.0:
+            bw = max(2, min(16, min(pw, ph) // 20))
+            perim_std = float(np.std(placed_np[:bw, :, :]))
+            if perim_std < 8.0:
+                final_prompt = "seamless clean minimal studio backdrop, soft diffused ambient lighting, empty background, smooth gradient, photorealistic"
+                final_negative = "tripod, camera, stand, softbox, lamp, umbrella, furniture, tiles, duplicate product, text, watermark, logo"
+            else:
+                final_prompt = "seamless architectural building wall and outdoor ground continuation, soft diffused ambient lighting, clean background, matching environment, photorealistic"
+                final_negative = universal_negative
         else:
-            advice = scene_info.get("extension_advice", "seamless matching scenery continuation")
-            final_prompt = f"{advice}, natural soft lighting, photorealistic matching background, high quality"
+            final_prompt = "soft out of focus bokeh backdrop, smooth natural color continuation, diffused lighting, clean empty background, photorealistic"
+            final_negative = universal_negative
 
         buf_i, buf_m = io.BytesIO(), io.BytesIO()
         canvas.save(buf_i, format="PNG")
         mask.save(buf_m, format="PNG")
 
-        url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/runwayml/stable-diffusion-v1-5-inpainting"
+        model_name = "@cf/runwayml/stable-diffusion-v1-5-inpainting"
+        url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model_name}"
         headers = {"Authorization": f"Bearer {api_token}"}
         payload = {
             "prompt": final_prompt,
+            "negative_prompt": final_negative,
             "image": list(buf_i.getvalue()),
             "mask": list(buf_m.getvalue()),
             "width": work_w,
@@ -413,23 +463,39 @@ def call_cloudflare_workers_ai_inpainting(
 
         gen_img = Image.open(io.BytesIO(res.content)).convert("RGB")
 
+        # Guard: check for blank/black output (e.g. NSFW safety filter or model error)
+        gen_arr = np.array(gen_img)
+        if float(np.mean(gen_arr)) < 6.0:
+            return None, "Cloudflare API returned blank/black frame (filtered). Falling back to studio expansion."
+
         # 6. Scale generated background to final target dimensions
         final_bg = gen_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
 
         # 7. Composite pristine customer-approved cropped image over generated background
+        # with anti-aliased cosine-feathered blending to eliminate sharp horizontal/vertical cut seams
         final_pw, final_ph, final_ox, final_oy, _ = calculate_expansion_canvas(
             orig_w, orig_h, target_w, target_h, source_img=source_img
         )
         pristine_src = source_img.resize((final_pw, final_ph), Image.Resampling.LANCZOS)
 
+        feather = min(14, max(4, min(final_pw, final_ph) // 25))
+        mask_comp = np.ones((final_ph, final_pw), dtype=np.float32)
+        for i in range(feather):
+            v = 0.5 * (1.0 - np.cos(np.pi * i / feather))
+            mask_comp[:, i] = np.minimum(mask_comp[:, i], v)
+            mask_comp[:, final_pw - 1 - i] = np.minimum(mask_comp[:, final_pw - 1 - i], v)
+        for j in range(feather):
+            v = 0.5 * (1.0 - np.cos(np.pi * j / feather))
+            mask_comp[j, :] = np.minimum(mask_comp[j, :], v)
+            mask_comp[final_ph - 1 - j, :] = np.minimum(mask_comp[final_ph - 1 - j, :], v)
+
+        mask_img = Image.fromarray((mask_comp * 255).astype(np.uint8))
         final_img = final_bg.copy()
-        final_img.paste(pristine_src, (final_ox, final_oy))
+        final_img.paste(pristine_src, (final_ox, final_oy), mask=mask_img)
         return final_img, None
 
     except Exception as e:
         return None, f"Cloudflare inpainting error: {str(e)[:120]}"
-
-
 def expand_background_groq(
     img: Image.Image,
     target_w: int,
