@@ -1,6 +1,6 @@
 # Ratio Studio - Unified Launcher for Windows PowerShell
 Write-Host "========================================" -ForegroundColor Magenta
-Write-Host " Starting Ratio Studio (Single Port: 8000)" -ForegroundColor Cyan
+Write-Host " Starting Ratio Studio (Backend + Frontend)" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Magenta
 
 # Check Python and Node
@@ -17,16 +17,11 @@ if (-not $npm) {
     exit 1
 }
 
-# Build frontend static bundle
-Write-Host "[2/3] Building frontend bundle..." -ForegroundColor Green
-npm run build --prefix frontend
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Frontend build failed."
-    exit 1
-}
+# Start backend in a separate background PowerShell process
+Write-Host "[2/3] Launching FastAPI Backend on http://127.0.0.1:8000..." -ForegroundColor Green
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd backend; python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload"
 
-# Launch unified server
-Write-Host "[3/3] Launching Unified Server on http://127.0.0.1:8000..." -ForegroundColor Green
-Start-Process "http://127.0.0.1:8000"
-cd backend
-python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
+# Start frontend in current window
+Write-Host "[3/3] Launching Vite Frontend on http://localhost:5173..." -ForegroundColor Green
+cd frontend
+npm run dev
