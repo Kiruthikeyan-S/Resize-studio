@@ -8,17 +8,55 @@ It features two primary comparison methods:
 
 ---
 
+## 🏗️ Architecture & Processing Workflow
+
+```text
+                      [ User Uploads Source Image ]
+                                   │
+                                   ▼
+                   [ Interactive Framing / Cropping ]
+                                   │
+                                   ▼
+                 [ Approved Working Master (working.png) ]
+                         (Immutable & Protected)
+                                   │
+                 ┌─────────────────┴─────────────────┐
+                 │                                   │
+                 ▼                                   ▼
+      ┌─────────────────────┐             ┌─────────────────────┐
+      │      METHOD A       │             │      METHOD B       │
+      │   Standard Resize   │             │ AI Enhanced Resize  │
+      └──────────┬──────────┘             └──────────┬──────────┘
+                 │                                   │
+                 │ 1. Pure Pillow LANCZOS            │ 1. Groq Vision Scene Analysis
+                 │ 2. Direct Stretch                 │ 2. Cloudflare SD 1.5 Inpainting
+                 │ 3. Zero AI modifications          │ 3. Real-ESRGAN CNN Super-Res
+                 │                                   │ 4. Cosine-Feathered Compositing
+                 ▼                                   ▼
+      [ 5 Standard Outputs ]               [ 5 AI Outpainted Outputs ]
+                 │                                   │
+                 └─────────────────┬─────────────────┘
+                                   │
+                                   ▼
+                   [ Side-by-Side Comparison Grid ]
+                                   │
+                                   ▼
+               [ Per-Ratio Selection & ZIP Export Package ]
+```
+
+---
+
 ## 📸 Five Commercial Target Ratios
 
 Every output is generated with mathematical precision according to standard production specifications:
 
 | Ratio | Dimensions | Orientation | Method A (Standard) | Method B (AI Enhanced) |
 |---|---|---|---|---|
-| **Square (1:1)** | 2048 × 2048 px | Square | Direct stretch (LANCZOS) | AI Outpainted background + Protected foreground |
-| **Portrait (4:5)** | 1600 × 2000 px | Portrait | Direct stretch (LANCZOS) | AI Outpainted background + Protected foreground |
-| **Portrait (3:4)** | 1536 × 2048 px | Portrait | Direct stretch (LANCZOS) | AI Outpainted background + Protected foreground |
-| **Landscape (16:9)** | 2560 × 1440 px | Landscape | Direct stretch (LANCZOS) | AI Outpainted background + Protected foreground |
-| **Landscape (5:4)** | 2000 × 1600 px | Landscape | Direct stretch (LANCZOS) | AI Outpainted background + Protected foreground |
+| **Square (1:1)** | `2048 × 2048` px | Square | Direct stretch (LANCZOS) | AI Outpainted background + Protected foreground |
+| **Portrait (4:5)** | `1600 × 2000` px | Portrait | Direct stretch (LANCZOS) | AI Outpainted background + Protected foreground |
+| **Portrait (3:4)** | `1536 × 2048` px | Portrait | Direct stretch (LANCZOS) | AI Outpainted background + Protected foreground |
+| **Landscape (16:9)** | `2560 × 1440` px | Landscape | Direct stretch (LANCZOS) | AI Outpainted background + Protected foreground |
+| **Landscape (5:4)** | `2000 × 1600` px | Landscape | Direct stretch (LANCZOS) | AI Outpainted background + Protected foreground |
 
 ---
 
@@ -27,27 +65,26 @@ Every output is generated with mathematical precision according to standard prod
 - **Method A & Method B Side-by-Side Comparison**:
   - Interactive comparison view for all 5 aspect ratios.
   - Independent selection per ratio: select Standard or AI for any ratio, or use presets (Select All Standard, Select All AI, Best Mix).
-  - Selected ZIP export (/api/download-selected) delivering exact selected variants and master manifest.json.
+  - Selected ZIP export (`/api/download-selected`) delivering exact selected variants and master `manifest.json`.
 
 - **CNN Super-Resolution (Real-ESRGAN)**:
   - Deep Convolutional Neural Network (**RRDBNet** with 23 Residual-in-Residual Dense Blocks and 4x scale factor).
   - Pure PyTorch implementation with singleton caching and memory-efficient tiled inference.
-  - Automatic download and caching of official pretrained weights (RealESRGAN_x4plus.pth).
+  - Automatic download and caching of official pretrained weights (`RealESRGAN_x4plus.pth`).
   - **Foreground Mode Choice**:
-    - Original (100%): Preserves 100% of approved pixels without alteration (pixel_identical).
-    - Real-ESRGAN: Reconstructs edges, textures, and clarity via CNN inference (i_enhanced_detail).
+    - `Original (100%)`: Preserves 100% of approved pixels without alteration (`pixel_identical`).
+    - `Real-ESRGAN`: Reconstructs edges, textures, and clarity via CNN inference (`ai_enhanced_detail`).
   - Master enhancement caching: generated once per approved master and reused across all ratios and sizes.
 
 - **Scene-Aware AI Background Outpainting**:
-  - Cloudflare Workers AI inpainting (@cf/runwayml/stable-diffusion-v1-5-inpainting).
+  - Cloudflare Workers AI inpainting (`@cf/runwayml/stable-diffusion-v1-5-inpainting`).
   - Groq Vision analyzes environment and scene lighting/composition for natural prompt generation.
   - Cosine-feathered protected foreground compositing preventing seam artifacts and subject alteration.
   - Graceful fallback to Studio texture synthesis with honest status reporting.
 
 - **Non-Destructive Original-Image-First Workflow**:
-  - Uploaded files are preserved byte-for-byte unchanged (
-aw.*).
-  - Working master copy (working.png) is created with EXIF orientation corrected.
+  - Uploaded files are preserved byte-for-byte unchanged (`raw.*`).
+  - Working master copy (`working.png`) is created with EXIF orientation corrected.
   - Full cropping and pan/zoom adjustment before generation.
   - Revert to raw at any time.
 
@@ -81,33 +118,33 @@ aw.*).
 
 ### 2. Quick Launch
 Run the launcher script from the root directory:
-`powershell
+```powershell
 ./run.bat
-`
+```
 Or start each service manually:
 
 **Backend**:
-`powershell
+```powershell
 cd backend
 python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
-`
-API Docs available at: http://127.0.0.1:8000/docs
+```
+API Docs available at: `http://127.0.0.1:8000/docs`
 
 **Frontend**:
-`powershell
+```powershell
 cd frontend
 npm run dev
-`
-Open http://localhost:5173 in your browser.
+```
+Open `http://localhost:5173` in your browser.
 
 ---
 
 ## 🧪 Automated Testing
 
 Full test suite with **60 automated tests** covering dimensions, CNN super-resolution, immutability, fallback handling, and downloads:
-`powershell
+```powershell
 pytest backend/tests -v
-`
+```
 
 ---
 
