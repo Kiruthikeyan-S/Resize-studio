@@ -42,6 +42,9 @@ class ConvertRequest(BaseModel):
     allow_opencv_fallback: bool = Field(default=True)
     prompt_hint: Optional[str] = None
     custom_crops: Optional[Dict[str, List[int]]] = None
+    foreground_mode: str = Field(default="original", description="original or enhanced")
+    enhance_foreground: Optional[bool] = Field(default=False)
+    sr_scale: int = Field(default=4, ge=2, le=4)
 
 
 class FitInfoItem(BaseModel):
@@ -94,6 +97,11 @@ class OutputRatioItem(BaseModel):
     edges_trimmed: Optional[bool] = False
     fit_info: Optional[FitInfoItem] = None
     fallback_reason: Optional[str] = None
+    enhancement_status: Optional[str] = None
+    enhancement_provider: Optional[str] = None
+    foreground_mode: Optional[str] = None
+    foreground_fidelity: Optional[str] = None
+    foreground_description: Optional[str] = None
     variants: List[VariantItem] = []
 
 
@@ -121,6 +129,9 @@ class ConvertComparisonRequest(BaseModel):
     allow_opencv_fallback: bool = Field(default=True)
     prompt_hint: Optional[str] = None
     standard_fit: str = Field(default="stretch", description="stretch, contain, or cover")
+    foreground_mode: str = Field(default="original", description="original or enhanced")
+    enhance_foreground: Optional[bool] = Field(default=False)
+    sr_scale: int = Field(default=4, ge=2, le=4)
 
 
 class ConvertComparisonResponse(BaseModel):
@@ -135,6 +146,10 @@ class ConvertComparisonResponse(BaseModel):
     groq_status: Optional[str] = None
     groq_provider: Optional[str] = None
     groq_message: Optional[str] = None
+    enhancement_status: Optional[str] = None
+    enhancement_provider: Optional[str] = None
+    foreground_mode: Optional[str] = "original"
+    foreground_fidelity: Optional[str] = "pixel_identical"
     rows: List[ComparisonRatioRow]
     outputs: List[OutputRatioItem] = []
 
@@ -173,6 +188,7 @@ async def convert_image(payload: ConvertRequest):
 
     if mode in ["comparison", "both"]:
         try:
+            effective_fg_mode = "enhanced" if (payload.enhance_foreground or payload.foreground_mode == "enhanced") else "original"
             results = generate_comparison_pipeline(
                 image_id=payload.image_id,
                 export_format=export_format,
@@ -183,6 +199,8 @@ async def convert_image(payload: ConvertRequest):
                 denoise=payload.denoise,
                 allow_opencv_fallback=payload.allow_opencv_fallback,
                 prompt_hint=payload.prompt_hint,
+                foreground_mode=effective_fg_mode,
+                sr_scale=payload.sr_scale,
             )
             return ConvertResponse(
                 image_id=results["image_id"],
@@ -245,6 +263,7 @@ async def convert_comparison_endpoint(payload: ConvertComparisonRequest):
         export_format = "jpeg"
 
     try:
+        effective_fg_mode = "enhanced" if (payload.enhance_foreground or payload.foreground_mode == "enhanced") else "original"
         results = generate_comparison_pipeline(
             image_id=payload.image_id,
             export_format=export_format,
@@ -256,6 +275,8 @@ async def convert_comparison_endpoint(payload: ConvertComparisonRequest):
             allow_opencv_fallback=payload.allow_opencv_fallback,
             prompt_hint=payload.prompt_hint,
             standard_fit=payload.standard_fit,
+            foreground_mode=effective_fg_mode,
+            sr_scale=payload.sr_scale,
         )
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Image session not found or expired.")
@@ -274,6 +295,10 @@ async def convert_comparison_endpoint(payload: ConvertComparisonRequest):
         groq_status=results.get("groq", {}).get("status"),
         groq_provider=results.get("groq", {}).get("provider"),
         groq_message=results.get("groq", {}).get("error_message"),
+        enhancement_status=results.get("enhancement_status"),
+        enhancement_provider=results.get("enhancement_provider"),
+        foreground_mode=results.get("foreground_mode", "original"),
+        foreground_fidelity=results.get("foreground_fidelity", "pixel_identical"),
         rows=results["rows"],
         outputs=results["standard"]["outputs"],
     )

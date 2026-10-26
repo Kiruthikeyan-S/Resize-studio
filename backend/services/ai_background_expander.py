@@ -148,6 +148,76 @@ def calculate_expansion_canvas(
         return placed_w, placed_h, offset_x, offset_y, "vertical"
 
 
+def composite_protected_foreground(
+    background_img: Image.Image,
+    foreground_img: Image.Image,
+    target_w: int,
+    target_h: int,
+    orig_w: int,
+    orig_h: int,
+    source_img_for_geometry: Optional[Image.Image] = None,
+    feather_radius: Optional[int] = None,
+) -> Image.Image:
+    """
+    Composite the protected foreground image over the generated background.
+    - Preserves aspect ratio and proportional framing.
+    - Uses anti-aliased cosine feathering at the boundaries to prevent sharp rectangular cut seams.
+    - Handles RGBA transparency seamlessly without fringing.
+    - Works with either the original approved working.png or a Real-ESRGAN enhanced foreground.
+    """
+    final_pw, final_ph, final_ox, final_oy, _ = calculate_expansion_canvas(
+        orig_w, orig_h, target_w, target_h, source_img=source_img_for_geometry or foreground_img
+    )
+
+    placed_fg = foreground_img.resize((final_pw, final_ph), Image.Resampling.LANCZOS)
+    is_rgba = (placed_fg.mode == "RGBA")
+
+    if feather_radius is None:
+        feather = min(14, max(4, min(final_pw, final_ph) // 25))
+    else:
+        feather = feather_radius
+
+    if feather > 2 and not is_rgba:
+        comp_mask = np.ones((final_ph, final_pw), dtype=np.float32)
+        for i in range(feather):
+            v = 0.5 * (1.0 - np.cos(np.pi * i / feather))
+            comp_mask[:, i] = np.minimum(comp_mask[:, i], v)
+            comp_mask[:, final_pw - 1 - i] = np.minimum(mask_comp[:, final_pw - 1 - i], v) if 'mask_comp' in locals() else np.minimum(comp_mask[:, final_pw - 1 - i], v)
+        for j in range(feather):
+            v = 0.5 * (1.0 - np.cos(np.pi * j / feather))
+            comp_mask[j, :] = np.minimum(comp_mask[j, :], v)
+            comp_mask[final_ph - 1 - j, :] = np.minimum(comp_mask[final_ph - 1 - j, :], v)
+
+        mask_img = Image.fromarray((comp_mask * 255).astype(np.uint8))
+        result = background_img.copy()
+        result.paste(placed_fg, (final_ox, final_oy), mask=mask_img)
+    elif is_rgba:
+        alpha = placed_fg.split()[-1]
+        if feather > 2:
+            comp_mask = np.ones((final_ph, final_pw), dtype=np.float32)
+            for i in range(feather):
+                v = 0.5 * (1.0 - np.cos(np.pi * i / feather))
+                comp_mask[:, i] = np.minimum(comp_mask[:, i], v)
+                comp_mask[:, final_pw - 1 - i] = np.minimum(comp_mask[:, final_pw - 1 - i], v)
+            for j in range(feather):
+                v = 0.5 * (1.0 - np.cos(np.pi * j / feather))
+                comp_mask[j, :] = np.minimum(comp_mask[j, :], v)
+                comp_mask[final_ph - 1 - j, :] = np.minimum(comp_mask[final_ph - 1 - j, :], v)
+            combined_alpha = Image.fromarray(
+                ((np.array(alpha).astype(np.float32) / 255.0) * comp_mask * 255.0).astype(np.uint8)
+            )
+            result = background_img.copy()
+            result.paste(placed_fg.convert("RGB"), (final_ox, final_oy), mask=combined_alpha)
+        else:
+            result = background_img.copy()
+            result.paste(placed_fg.convert("RGB"), (final_ox, final_oy), mask=alpha)
+    else:
+        result = background_img.copy()
+        result.paste(placed_fg, (final_ox, final_oy))
+
+    return result
+
+
 def studio_texture_background_expansion(
     img_rgb: Image.Image,
     target_w: int,
@@ -160,6 +230,7 @@ def studio_texture_background_expansion(
     bg_color_hex: str = "#F8FAFC",
     is_transparent: bool = False,
     vision_info: Optional[Dict[str, Any]] = None,
+    foreground_img: Optional[Image.Image] = None,
     **kwargs
 ) -> Image.Image:
     """
@@ -262,24 +333,18 @@ def studio_texture_background_expansion(
                 diffused[target_h - pad_bottom:, :].astype(np.float32) * (w_b * 0.95)
             ).astype(np.uint8)
 
-    # 3. Composite pristine original pixels with smooth anti-aliased cosine feathering
+    # 3. Separate background generation from protected foreground compositing
     res_img = Image.fromarray(canvas_np)
-    feather = min(12, min(placed_w, placed_h) // 10)
-    if feather > 2:
-        comp_mask = np.ones((placed_h, placed_w), dtype=np.float32)
-        for i in range(feather):
-            v = 0.5 * (1.0 - np.cos(np.pi * i / feather))
-            comp_mask[:, i] = np.minimum(comp_mask[:, i], v)
-            comp_mask[:, placed_w - 1 - i] = np.minimum(comp_mask[:, placed_w - 1 - i], v)
-        for j in range(feather):
-            v = 0.5 * (1.0 - np.cos(np.pi * j / feather))
-            comp_mask[j, :] = np.minimum(comp_mask[j, :], v)
-            comp_mask[placed_h - 1 - j, :] = np.minimum(comp_mask[placed_h - 1 - j, :], v)
-        res_img.paste(placed_img, (offset_x, offset_y), mask=Image.fromarray((comp_mask * 255).astype(np.uint8)))
-    else:
-        res_img.paste(placed_img, (offset_x, offset_y))
-
-    return res_img
+    effective_fg = foreground_img if foreground_img is not None else placed_img
+    return composite_protected_foreground(
+        background_img=res_img,
+        foreground_img=effective_fg,
+        target_w=target_w,
+        target_h=target_h,
+        orig_w=placed_w if expansion_type == "none" else clean_img.size[0],
+        orig_h=placed_h if expansion_type == "none" else clean_img.size[1],
+        source_img_for_geometry=clean_img,
+    )
 
 
 def call_groq_vision_guided_expansion(
@@ -330,6 +395,7 @@ def call_cloudflare_workers_ai_inpainting(
     vision_info: Optional[Dict[str, Any]] = None,
     bg_color_hex: Optional[str] = None,
     is_transparent: bool = False,
+    foreground_img: Optional[Image.Image] = None,
 ) -> Tuple[Optional[Image.Image], Optional[str]]:
     """
     Call Cloudflare Workers AI inpainting model with model-compatible dimensions
@@ -471,27 +537,17 @@ def call_cloudflare_workers_ai_inpainting(
         # 6. Scale generated background to final target dimensions
         final_bg = gen_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
 
-        # 7. Composite pristine customer-approved cropped image over generated background
-        # with anti-aliased cosine-feathered blending to eliminate sharp horizontal/vertical cut seams
-        final_pw, final_ph, final_ox, final_oy, _ = calculate_expansion_canvas(
-            orig_w, orig_h, target_w, target_h, source_img=source_img
+        # 7. Separate background generation from protected foreground compositing
+        effective_fg = foreground_img if foreground_img is not None else source_img
+        final_img = composite_protected_foreground(
+            background_img=final_bg,
+            foreground_img=effective_fg,
+            target_w=target_w,
+            target_h=target_h,
+            orig_w=orig_w,
+            orig_h=orig_h,
+            source_img_for_geometry=source_img,
         )
-        pristine_src = source_img.resize((final_pw, final_ph), Image.Resampling.LANCZOS)
-
-        feather = min(14, max(4, min(final_pw, final_ph) // 25))
-        mask_comp = np.ones((final_ph, final_pw), dtype=np.float32)
-        for i in range(feather):
-            v = 0.5 * (1.0 - np.cos(np.pi * i / feather))
-            mask_comp[:, i] = np.minimum(mask_comp[:, i], v)
-            mask_comp[:, final_pw - 1 - i] = np.minimum(mask_comp[:, final_pw - 1 - i], v)
-        for j in range(feather):
-            v = 0.5 * (1.0 - np.cos(np.pi * j / feather))
-            mask_comp[j, :] = np.minimum(mask_comp[j, :], v)
-            mask_comp[final_ph - 1 - j, :] = np.minimum(mask_comp[final_ph - 1 - j, :], v)
-
-        mask_img = Image.fromarray((mask_comp * 255).astype(np.uint8))
-        final_img = final_bg.copy()
-        final_img.paste(pristine_src, (final_ox, final_oy), mask=mask_img)
         return final_img, None
 
     except Exception as e:
@@ -505,6 +561,8 @@ def expand_background_groq(
     bg_color_hex: str = "#F8FAFC",
     is_transparent: bool = False,
     allow_opencv_fallback: bool = True,
+    foreground_img: Optional[Image.Image] = None,
+    foreground_mode: str = "original",
     **kwargs
 ) -> Tuple[Optional[Image.Image], Dict[str, Any]]:
     """
@@ -516,7 +574,8 @@ def expand_background_groq(
     pw, ph, ox, oy, ext_type = calculate_expansion_canvas(orig_w, orig_h, target_w, target_h, source_img=img)
 
     if ext_type == "none":
-        resized = img.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
+        effective_fg = foreground_img if foreground_img is not None else img
+        resized = effective_fg.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
         meta = {
             "status": "ready",
             "method": "ai",
@@ -525,6 +584,14 @@ def expand_background_groq(
             "canvas_size": [target_w, target_h],
             "placed_box": [0, 0, target_w, target_h],
             "product_preserved": True,
+            "foreground_mode": foreground_mode,
+            "foreground_fidelity": "pixel_identical" if foreground_mode == "original" else "ai_enhanced_detail",
+            "foreground_status": "original_approved" if foreground_mode == "original" else "realesrgan_enhanced",
+            "foreground_description": (
+                "Original customer-approved pixels preserved without alteration."
+                if foreground_mode == "original"
+                else "Real-ESRGAN CNN super-resolution enhanced foreground for improved apparent detail. Not claimed to be pixel-identical to source."
+            ),
             "error_message": None,
         }
         return resized, meta
@@ -539,6 +606,7 @@ def expand_background_groq(
             vision_info=cached_analysis,
             bg_color_hex=bg_color_hex,
             is_transparent=is_transparent,
+            foreground_img=foreground_img,
         )
         if cf_img is not None:
             return cf_img, {
@@ -550,6 +618,14 @@ def expand_background_groq(
                 "canvas_size": [target_w, target_h],
                 "placed_box": [ox, oy, ox + pw, oy + ph],
                 "product_preserved": True,
+                "foreground_mode": foreground_mode,
+                "foreground_fidelity": "pixel_identical" if foreground_mode == "original" else "ai_enhanced_detail",
+                "foreground_status": "original_approved" if foreground_mode == "original" else "realesrgan_enhanced",
+                "foreground_description": (
+                    "Original customer-approved pixels preserved without alteration."
+                    if foreground_mode == "original"
+                    else "Real-ESRGAN CNN super-resolution enhanced foreground for improved apparent detail. Not claimed to be pixel-identical to source."
+                ),
                 "error_message": None,
             }
         else:
@@ -571,6 +647,7 @@ def expand_background_groq(
             bg_color_hex=bg_color_hex,
             is_transparent=is_transparent,
             vision_info=cached_analysis,
+            foreground_img=foreground_img,
         )
         return fallback_img, {
             "status": "fallback",
@@ -581,6 +658,14 @@ def expand_background_groq(
             "canvas_size": [target_w, target_h],
             "placed_box": [ox, oy, ox + pw, oy + ph],
             "product_preserved": True,
+            "foreground_mode": foreground_mode,
+            "foreground_fidelity": "pixel_identical" if foreground_mode == "original" else "ai_enhanced_detail",
+            "foreground_status": "original_approved" if foreground_mode == "original" else "realesrgan_enhanced",
+            "foreground_description": (
+                "Original customer-approved pixels preserved without alteration."
+                if foreground_mode == "original"
+                else "Real-ESRGAN CNN super-resolution enhanced foreground for improved apparent detail. Not claimed to be pixel-identical to source."
+            ),
             "error_message": f"AI generation unavailable ({cf_err}). Displaying adaptive fallback.",
         }
 

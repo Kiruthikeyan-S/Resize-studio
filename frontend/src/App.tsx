@@ -265,6 +265,8 @@ export const App: React.FC = () => {
         denoise: settings.denoise,
         allow_opencv_fallback: true,
         standard_fit: settings.standard_fit || 'stretch',
+        foreground_mode: settings.foreground_mode || (settings.enhance_foreground ? 'enhanced' : 'original'),
+        enhance_foreground: settings.enhance_foreground,
       });
 
       setComparisonRowsMap((prev) => ({

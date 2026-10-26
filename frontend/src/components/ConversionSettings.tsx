@@ -29,7 +29,7 @@ export const ConversionSettings: React.FC<ConversionSettingsProps> = ({
       </div>
 
       {/* Export Format & Quality Controls in Compact Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         {/* Export Format */}
         <div className="space-y-1.5">
           <label className="text-xs font-semibold text-slate-600">
@@ -108,6 +108,49 @@ export const ConversionSettings: React.FC<ConversionSettingsProps> = ({
             }
             className="w-full accent-violet-600 bg-slate-200 h-2 rounded-lg cursor-pointer"
           />
+        </div>
+
+        {/* Method B Foreground Choice */}
+        <div className="space-y-1.5">
+          <div className="flex justify-between items-center">
+            <label className="text-xs font-semibold text-slate-600">
+              Method B Foreground
+            </label>
+            <span className="text-[10px] text-slate-400 font-normal">Method A untouched</span>
+          </div>
+          <div className="flex rounded-xl bg-slate-100 p-1 border border-slate-200">
+            {[
+              { id: 'original', label: 'Original (100%)' },
+              { id: 'enhanced', label: 'Real-ESRGAN' },
+            ].map(({ id, label }) => {
+              const active = (settings.foreground_mode || (settings.enhance_foreground ? 'enhanced' : 'original')) === id;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() =>
+                    setSettings((prev) => ({
+                      ...prev,
+                      foreground_mode: id as 'original' | 'enhanced',
+                      enhance_foreground: id === 'enhanced',
+                    }))
+                  }
+                  className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
+                    active
+                      ? 'bg-white text-violet-700 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                  title={
+                    id === 'original'
+                      ? 'Preserves 100% of approved pixels with zero alteration'
+                      : 'CNN Real-ESRGAN super-resolution for crisper apparent detail'
+                  }
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         {/* Detail Enhancement / Sharpen */}

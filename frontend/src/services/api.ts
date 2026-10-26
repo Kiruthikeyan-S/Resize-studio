@@ -68,6 +68,11 @@ export interface RatioOutput {
   fit_info?: FitInfo;
   fallback_reason?: string;
   is_generative_ai?: boolean;
+  enhancement_status?: string;
+  enhancement_provider?: string;
+  foreground_mode?: 'original' | 'enhanced';
+  foreground_fidelity?: string;
+  foreground_description?: string;
   variants?: OutputVariant[];
 }
 
@@ -97,6 +102,9 @@ export interface ConvertSettings {
   allow_opencv_fallback?: boolean;
   prompt_hint?: string;
   custom_crops?: Record<string, [number, number, number, number]>;
+  foreground_mode?: 'original' | 'enhanced';
+  enhance_foreground?: boolean;
+  sr_scale?: number;
 }
 
 export interface ConvertComparisonSettings {
@@ -110,6 +118,9 @@ export interface ConvertComparisonSettings {
   allow_opencv_fallback?: boolean;
   prompt_hint?: string;
   standard_fit?: 'stretch' | 'contain' | 'cover';
+  foreground_mode?: 'original' | 'enhanced';
+  enhance_foreground?: boolean;
+  sr_scale?: number;
 }
 
 export interface ConvertComparisonResponse {
@@ -124,6 +135,10 @@ export interface ConvertComparisonResponse {
   groq_status?: 'ready' | 'unavailable' | 'failed' | 'fallback';
   groq_provider?: string;
   groq_message?: string;
+  enhancement_status?: string;
+  enhancement_provider?: string;
+  foreground_mode?: 'original' | 'enhanced';
+  foreground_fidelity?: string;
   rows: ComparisonRow[];
   outputs: RatioOutput[];
 }

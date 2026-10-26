@@ -107,18 +107,29 @@ export const ComparisonCard: React.FC<ComparisonCardProps> = ({
               </span>
             )}
             {isAI && status === 'ready' && (
-              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1">
-                <Check className="w-3 h-3" />
-                <span>{item.is_generative_ai ? 'AI Outpainted' : 'AI Enhanced'}</span>
-              </span>
+              <>
+                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1">
+                  <Check className="w-3 h-3" />
+                  <span>{item.is_generative_ai ? 'AI Outpainted' : 'AI Enhanced'}</span>
+                </span>
+                {item.foreground_mode === 'enhanced' ? (
+                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-purple-100 text-purple-800 border border-purple-200 flex items-center gap-1">
+                    <span>✨ Real-ESRGAN Detail</span>
+                  </span>
+                ) : (
+                  <span className="text-[10px] font-medium px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200 flex items-center gap-1">
+                    <span>✓ 100% Original Source</span>
+                  </span>
+                )}
+              </>
             )}
           </div>
 
           <p className="text-xs text-slate-500">
             {isAI
-              ? (item.is_generative_ai
-                  ? 'Maintains natural proportions; real generative AI outpainted background.'
-                  : 'Maintains natural proportions; Groq Vision-assisted background continuation.')
+              ? (item.foreground_mode === 'enhanced'
+                  ? 'Maintains natural proportions with Real-ESRGAN super-resolution foreground detail and AI outpainted background.'
+                  : 'Maintains natural proportions; 100% original approved foreground on AI outpainted background.')
               : item.mode === 'safe_fit'
               ? 'Safe Fit (contain). 100% original content preserved without distortion.'
               : item.mode === 'smart_crop'

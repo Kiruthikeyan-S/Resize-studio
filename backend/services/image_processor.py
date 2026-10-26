@@ -559,7 +559,9 @@ def generate_comparison_pipeline(
     denoise: bool = False,
     allow_opencv_fallback: bool = False,
     prompt_hint: Optional[str] = None,
-    standard_fit: str = "stretch"
+    standard_fit: str = "stretch",
+    foreground_mode: str = "original",
+    sr_scale: int = 4,
 ) -> Dict[str, Any]:
     """
     Generate two primary image-processing methods from the approved cropped working image:
@@ -627,7 +629,24 @@ def generate_comparison_pipeline(
     except Exception:
         groq_cached_analysis = None
 
-
+    # Load and optionally super-resolve the master foreground once for all ratios
+    enhanced_master = None
+    sr_meta = None
+    if foreground_mode == "enhanced":
+        try:
+            from services.super_resolution import get_or_create_enhanced_master
+            version = int(orig_meta.get("version", 1))
+            with Image.open(orig_path) as master_for_sr:
+                master_for_sr = ensure_srgb_profile(master_for_sr)
+                enhanced_master, sr_meta = get_or_create_enhanced_master(
+                    image_id=image_id,
+                    source_img=master_for_sr,
+                    version=version,
+                    scale=sr_scale,
+                )
+        except Exception as e:
+            logger.warning(f"Super-resolution failed, falling back to original foreground: {e}")
+            sr_meta = {"status": "fallback", "provider": "studio_fallback", "error": str(e)}
 
     with Image.open(orig_path) as source_img:
         source_img = ensure_srgb_profile(source_img)
@@ -754,6 +773,8 @@ def generate_comparison_pipeline(
                 bg_color_hex=bg_color_hex,
                 is_transparent=is_transparent,
                 allow_opencv_fallback=allow_opencv_fallback,
+                foreground_img=enhanced_master if foreground_mode == "enhanced" else None,
+                foreground_mode=foreground_mode,
             )
             if ai_img is not None and groq_cached_analysis is None and ai_meta.get("analysis"):
                 groq_cached_analysis = ai_meta["analysis"]
@@ -867,6 +888,15 @@ def generate_comparison_pipeline(
                 "provider": ai_provider,
                 "error_message": ai_err,
                 "is_generative_ai": ai_is_gen,
+                "enhancement_status": sr_meta.get("status") if sr_meta else ("original" if foreground_mode == "original" else "none"),
+                "enhancement_provider": sr_meta.get("provider") if sr_meta else ("none" if foreground_mode == "original" else "none"),
+                "foreground_mode": foreground_mode,
+                "foreground_fidelity": "pixel_identical" if foreground_mode == "original" else "ai_enhanced_detail",
+                "foreground_description": (
+                    "Original customer-approved pixels preserved without alteration."
+                    if foreground_mode == "original"
+                    else "Real-ESRGAN CNN super-resolution enhanced foreground for improved apparent detail. Not claimed to be pixel-identical to source."
+                ),
                 "variants": ai_variants,
             }
             ai_outputs.append(ai_output_item)
@@ -924,8 +954,16 @@ def generate_comparison_pipeline(
             "provider": overall_ai_provider,
             "error_message": overall_ai_message,
             "is_generative_ai": any(item.get("is_generative_ai", False) for item in ai_outputs),
+            "enhancement_status": sr_meta.get("status") if sr_meta else ("original" if foreground_mode == "original" else "none"),
+            "enhancement_provider": sr_meta.get("provider") if sr_meta else "none",
+            "foreground_mode": foreground_mode,
+            "foreground_fidelity": "pixel_identical" if foreground_mode == "original" else "ai_enhanced_detail",
             "outputs": ai_outputs,
         },
+        "foreground_mode": foreground_mode,
+        "enhancement_status": sr_meta.get("status") if sr_meta else ("original" if foreground_mode == "original" else "none"),
+        "enhancement_provider": sr_meta.get("provider") if sr_meta else "none",
+        "foreground_fidelity": "pixel_identical" if foreground_mode == "original" else "ai_enhanced_detail",
         "rows": comparison_rows,
         "outputs": standard_outputs,
         "variants": all_variants,

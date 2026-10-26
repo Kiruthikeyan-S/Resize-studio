@@ -24,6 +24,14 @@ dist/
 .vite/
 frontend/.vite/
 
+# Pretrained Weights & Neural Models
+*.pth
+*.pt
+*.onnx
+*.bin
+backend/weights/
+backend/models/
+
 # Runtime Storage & Uploads
 backend/storage/original/
 backend/storage/generated/
