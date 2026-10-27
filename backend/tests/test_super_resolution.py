@@ -274,3 +274,145 @@ def test_foreground_choice_fidelity_labeling():
         assert ai["foreground_fidelity"] == "ai_enhanced_detail"
         # Never claim enhanced copy is pixel-identical
         assert "Not claimed to be pixel-identical" in ai.get("foreground_description", "")
+
+
+# -------------------------------------------------------------------------
+# 6. Cache Metadata Sidecar & Authentic Provider Restoration
+# -------------------------------------------------------------------------
+
+def test_cache_metadata_restores_authentic_provider_and_status(tmp_path):
+    """Verify that cached super-resolution metadata faithfully restores status and provider from JSON sidecar."""
+    from unittest.mock import patch
+    import tempfile
+    from services.super_resolution import get_or_create_enhanced_master
+
+    test_img = Image.new("RGB", (60, 40), (100, 150, 200))
+    import uuid, shutil
+    session_id = f"test_meta_{uuid.uuid4().hex[:12]}"
+
+    # Force fallback to studio_fallback by mocking model to None
+    with patch("services.super_resolution.get_super_resolution_model", return_value=(None, "Model disabled for test")):
+        img1, meta1 = get_or_create_enhanced_master(
+            image_id=session_id,
+            source_img=test_img,
+            version=1,
+            model_name="RealESRGAN_x4plus",
+            scale=2,
+        )
+        assert meta1["status"] == "fallback"
+        assert meta1["provider"] == "studio_fallback"
+        assert meta1["is_neural_sr"] is False
+
+        # Load again from cache - must restore authentic fallback status, NOT falsely claim realesrgan
+        img2, meta2 = get_or_create_enhanced_master(
+            image_id=session_id,
+            source_img=test_img,
+            version=1,
+            model_name="RealESRGAN_x4plus",
+            scale=2,
+        )
+        assert meta2["status"] == "fallback"
+        assert meta2["provider"] == "studio_fallback"
+        assert meta2["is_neural_sr"] is False
+        assert meta2["is_cached"] is True
+
+
+# -------------------------------------------------------------------------
+# 7. Canvas Proportional Placement & Direct Fit for All Ratios
+# -------------------------------------------------------------------------
+
+def test_proportional_canvas_placement_and_mask_boundaries_all_ratios():
+    """Verify proportional scaling, centering, and empty region calculation across all 5 target ratios."""
+    test_cases = [
+        # (orig_w, orig_h, target_w, target_h, expected_type)
+        (1000, 1000, 2048, 2048, "none"),         # 1:1 to 1:1
+        (1000, 1000, 1600, 2000, "vertical"),     # 1:1 to 4:5 (target is taller)
+        (1000, 1000, 1536, 2048, "vertical"),     # 1:1 to 3:4 (target is taller)
+        (1000, 1000, 2560, 1440, "horizontal"),   # 1:1 to 16:9 (target is wider)
+        (1000, 1000, 2000, 1600, "horizontal"),   # 1:1 to 5:4 (target is wider)
+    ]
+
+    for ow, oh, tw, th, expected_ext in test_cases:
+        pw, ph, ox, oy, ext_type = calculate_expansion_canvas(ow, oh, tw, th)
+        assert ext_type == expected_ext
+        # Aspect ratio of placed image must match source aspect ratio
+        placed_ratio = pw / float(ph)
+        orig_ratio = ow / float(oh)
+        assert abs(placed_ratio - orig_ratio) < 0.02
+        # Placed box must fit entirely within target canvas
+        assert ox >= 0 and oy >= 0
+        assert ox + pw <= tw
+        assert oy + ph <= th
+
+
+def test_direct_fit_when_source_matches_target_aspect_ratio():
+    """When source aspect ratio matches target, avoid unnecessary background generation and report direct_fit."""
+    img_16_9 = Image.new("RGB", (160, 90), (100, 100, 100))
+    res_img, meta = expand_background_groq(
+        img=img_16_9,
+        target_w=2560,
+        target_h=1440,
+        foreground_mode="original",
+    )
+    assert res_img.size == (2560, 1440)
+    assert meta["status"] == "ready"
+    assert meta["provider"] == "direct_fit"
+    assert meta["is_generative_ai"] is False
+
+
+# -------------------------------------------------------------------------
+# 8. Mock Cloudflare Inpainting API & Overall Status Honesty
+# -------------------------------------------------------------------------
+
+def test_mock_cloudflare_inpainting_success_reports_generative_ai():
+    """Verify that successful Cloudflare inpainting accurately reports is_generative_ai=True and provider."""
+    from unittest.mock import patch, MagicMock
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    # Create fake 768x768 output image
+    fake_img = Image.new("RGB", (768, 768), (180, 200, 220))
+    buf = io.BytesIO()
+    fake_img.save(buf, format="PNG")
+    mock_resp.content = buf.getvalue()
+
+    with patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "mock_acc", "CLOUDFLARE_API_TOKEN": "mock_tok"}):
+        with patch("requests.post", return_value=mock_resp):
+            img_src = Image.new("RGB", (100, 80), (150, 120, 90))
+            out_img, meta = expand_background_groq(
+                img=img_src,
+                target_w=2048,
+                target_h=2048,
+                foreground_mode="original",
+            )
+            assert out_img.size == (2048, 2048)
+            assert meta["status"] == "ready"
+            assert meta["provider"] == "cloudflare_workers_ai"
+            assert meta["is_generative_ai"] is True
+
+
+def test_overall_status_honesty_when_background_uses_fallback():
+    """Verify overall session status reports fallback accurately when external AI is unavailable."""
+    img_bytes = create_test_image("JPEG", (80, 60))
+    upload_res = client.post("/api/upload", files={"file": ("honesty_test.jpg", img_bytes, "image/jpeg")})
+    image_id = upload_res.json()["image_id"]
+
+    # Without valid cloudflare credentials in test environment
+    from unittest.mock import patch
+    with patch("services.ai_background_expander.is_cloudflare_enabled", return_value=False):
+        res = client.post("/api/convert-comparison", json={
+            "image_id": image_id,
+            "foreground_mode": "original",
+            "allow_opencv_fallback": True,
+        })
+        data = res.json()
+        assert data["ai_status"] == "fallback"
+        assert data["ai_provider"] == "studio_fallback"
+        assert data["ai_is_generative"] is False
+
+        for row in data["rows"]:
+            ai = row["ai"]
+            if ai["provider"] != "direct_fit":
+                assert ai["status"] == "fallback"
+                assert ai["provider"] == "studio_fallback"
+                assert ai["is_generative_ai"] is False

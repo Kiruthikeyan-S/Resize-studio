@@ -4,8 +4,11 @@ import os
 import json
 import time
 import shutil
+import logging
 from typing import Dict, Any, List, Optional, Tuple
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 from services.crop_engine import (
     process_safe_fit,
@@ -922,13 +925,32 @@ def generate_comparison_pipeline(
             })
 
     # Overall statuses
-    overall_ai_status = (
-        "ready" if any(item.get("status") == "ready" for item in ai_outputs)
-        else ("fallback" if any(item.get("status") == "fallback" for item in ai_outputs)
-        else ("failed" if any(item.get("status") == "failed" for item in ai_outputs) else "unavailable"))
-    )
+    all_ready = all(item.get("status") == "ready" for item in ai_outputs)
+    any_ready = any(item.get("status") == "ready" for item in ai_outputs)
+    any_fallback = any(item.get("status") == "fallback" for item in ai_outputs)
+    all_failed = all(item.get("status") == "failed" for item in ai_outputs)
+
+    if all_ready and not any_fallback:
+        overall_ai_status = "ready"
+    elif any_fallback or (any_ready and not all_ready):
+        overall_ai_status = "fallback"
+    elif all_failed:
+        overall_ai_status = "failed"
+    else:
+        overall_ai_status = "unavailable"
+
+    expansion_items = [item for item in ai_outputs if item.get("provider") != "direct_fit"]
+    if expansion_items:
+        overall_ai_is_gen = all(item.get("is_generative_ai", False) for item in expansion_items)
+    else:
+        overall_ai_is_gen = False
+
     overall_ai_message = next((item.get("error_message") for item in ai_outputs if item.get("error_message")), None)
-    overall_ai_provider = next((item.get("provider") for item in ai_outputs if item.get("provider")), "groq_vision")
+    overall_ai_provider = (
+        "cloudflare_workers_ai" if overall_ai_is_gen
+        else ("studio_fallback" if any_fallback
+        else next((item.get("provider") for item in ai_outputs if item.get("provider")), "studio_fallback"))
+    )
 
     session_data = {
         "image_id": image_id,
@@ -953,7 +975,7 @@ def generate_comparison_pipeline(
             "status": overall_ai_status,
             "provider": overall_ai_provider,
             "error_message": overall_ai_message,
-            "is_generative_ai": any(item.get("is_generative_ai", False) for item in ai_outputs),
+            "is_generative_ai": overall_ai_is_gen,
             "enhancement_status": sr_meta.get("status") if sr_meta else ("original" if foreground_mode == "original" else "none"),
             "enhancement_provider": sr_meta.get("provider") if sr_meta else "none",
             "foreground_mode": foreground_mode,

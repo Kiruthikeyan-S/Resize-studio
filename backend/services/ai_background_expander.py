@@ -177,42 +177,37 @@ def composite_protected_foreground(
     else:
         feather = feather_radius
 
-    if feather > 2 and not is_rgba:
-        comp_mask = np.ones((final_ph, final_pw), dtype=np.float32)
-        for i in range(feather):
-            v = 0.5 * (1.0 - np.cos(np.pi * i / feather))
-            comp_mask[:, i] = np.minimum(comp_mask[:, i], v)
-            comp_mask[:, final_pw - 1 - i] = np.minimum(mask_comp[:, final_pw - 1 - i], v) if 'mask_comp' in locals() else np.minimum(comp_mask[:, final_pw - 1 - i], v)
-        for j in range(feather):
-            v = 0.5 * (1.0 - np.cos(np.pi * j / feather))
-            comp_mask[j, :] = np.minimum(comp_mask[j, :], v)
-            comp_mask[final_ph - 1 - j, :] = np.minimum(comp_mask[final_ph - 1 - j, :], v)
-
-        mask_img = Image.fromarray((comp_mask * 255).astype(np.uint8))
-        result = background_img.copy()
-        result.paste(placed_fg, (final_ox, final_oy), mask=mask_img)
-    elif is_rgba:
-        alpha = placed_fg.split()[-1]
-        if feather > 2:
-            comp_mask = np.ones((final_ph, final_pw), dtype=np.float32)
-            for i in range(feather):
+    comp_mask = np.ones((final_ph, final_pw), dtype=np.float32)
+    if feather > 2:
+        # Feather only edges that border expanded background (avoiding frame boundary seams)
+        if final_ox > 0:
+            for i in range(min(feather, final_pw)):
                 v = 0.5 * (1.0 - np.cos(np.pi * i / feather))
                 comp_mask[:, i] = np.minimum(comp_mask[:, i], v)
+        if (target_w - (final_ox + final_pw)) > 0:
+            for i in range(min(feather, final_pw)):
+                v = 0.5 * (1.0 - np.cos(np.pi * i / feather))
                 comp_mask[:, final_pw - 1 - i] = np.minimum(comp_mask[:, final_pw - 1 - i], v)
-            for j in range(feather):
+
+        if final_oy > 0:
+            for j in range(min(feather, final_ph)):
                 v = 0.5 * (1.0 - np.cos(np.pi * j / feather))
                 comp_mask[j, :] = np.minimum(comp_mask[j, :], v)
+        if (target_h - (final_oy + final_ph)) > 0:
+            for j in range(min(feather, final_ph)):
+                v = 0.5 * (1.0 - np.cos(np.pi * j / feather))
                 comp_mask[final_ph - 1 - j, :] = np.minimum(comp_mask[final_ph - 1 - j, :], v)
-            combined_alpha = Image.fromarray(
-                ((np.array(alpha).astype(np.float32) / 255.0) * comp_mask * 255.0).astype(np.uint8)
-            )
-            result = background_img.copy()
-            result.paste(placed_fg.convert("RGB"), (final_ox, final_oy), mask=combined_alpha)
-        else:
-            result = background_img.copy()
-            result.paste(placed_fg.convert("RGB"), (final_ox, final_oy), mask=alpha)
+
+    result = background_img.copy()
+    if is_rgba:
+        alpha = placed_fg.split()[-1]
+        alpha_np = (np.array(alpha).astype(np.float32) / 255.0) * comp_mask * 255.0
+        final_alpha = Image.fromarray(alpha_np.astype(np.uint8))
+        result.paste(placed_fg.convert("RGB"), (final_ox, final_oy), mask=final_alpha)
+    elif feather > 2:
+        mask_img = Image.fromarray((comp_mask * 255).astype(np.uint8))
+        result.paste(placed_fg, (final_ox, final_oy), mask=mask_img)
     else:
-        result = background_img.copy()
         result.paste(placed_fg, (final_ox, final_oy))
 
     return result

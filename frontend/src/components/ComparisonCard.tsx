@@ -107,21 +107,27 @@ export const ComparisonCard: React.FC<ComparisonCardProps> = ({
               </span>
             )}
             {isAI && status === 'ready' && (
-              <>
-                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1">
-                  <Check className="w-3 h-3" />
-                  <span>{item.is_generative_ai ? 'AI Outpainted' : 'AI Enhanced'}</span>
-                </span>
-                {item.foreground_mode === 'enhanced' ? (
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1">
+                <Check className="w-3 h-3" />
+                <span>{item.provider === 'direct_fit' ? 'Direct Fit' : (item.is_generative_ai ? 'AI Outpainted' : 'AI Enhanced')}</span>
+              </span>
+            )}
+            {isAI && (status === 'ready' || status === 'fallback') && (
+              item.foreground_mode === 'enhanced' ? (
+                item.enhancement_status === 'fallback' ? (
+                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-amber-100 text-amber-800 border border-amber-200 flex items-center gap-1" title="Algorithmic Lanczos fallback used for super-resolution">
+                    <span>⚡ Enhanced (Lanczos)</span>
+                  </span>
+                ) : (
                   <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-purple-100 text-purple-800 border border-purple-200 flex items-center gap-1">
                     <span>✨ Real-ESRGAN Detail</span>
                   </span>
-                ) : (
-                  <span className="text-[10px] font-medium px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200 flex items-center gap-1">
-                    <span>✓ 100% Original Source</span>
-                  </span>
-                )}
-              </>
+                )
+              ) : (
+                <span className="text-[10px] font-medium px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200 flex items-center gap-1">
+                  <span>✓ 100% Original Source</span>
+                </span>
+              )
             )}
           </div>
 
@@ -136,6 +142,11 @@ export const ComparisonCard: React.FC<ComparisonCardProps> = ({
               ? 'Smart Cover (crop). Fills canvas with subject-centered crop.'
               : 'Direct stretch (Lanczos). Preserves 100% of approved pixels.'}
           </p>
+          {isAI && item.error_message && (status === 'fallback' || status === 'failed') && (
+            <p className="text-[10px] text-amber-800 bg-amber-50/80 px-2 py-1 rounded border border-amber-200/80">
+              ℹ️ {item.error_message}
+            </p>
+          )}
         </div>
 
         {/* Preferred Selector Toggle Button */}

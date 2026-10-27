@@ -186,7 +186,19 @@ export interface GroqAnalysisResponse {
   };
 }
 
-const API_BASE = (import.meta.env.VITE_API_BASE as string) || '/api';
+const envApiBase =
+  (import.meta.env.VITE_API_BASE as string) ||
+  (import.meta.env.VITE_API_BASE_URL as string) ||
+  (import.meta.env.VITE_API_URL as string);
+
+export const API_BASE =
+  envApiBase ||
+  (typeof window !== 'undefined' &&
+   window.location.hostname !== 'localhost' &&
+   window.location.hostname !== '127.0.0.1' &&
+   !window.location.hostname.endsWith('.localhost')
+    ? 'https://resize-studio.onrender.com/api'
+    : '/api');
 
 export function resolveUrl(url: string | undefined): string {
   if (!url) return '';

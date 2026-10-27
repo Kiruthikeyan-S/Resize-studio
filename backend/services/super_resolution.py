@@ -5,6 +5,7 @@ Preserves original working.png as immutable source files.
 
 import os
 import sys
+import json
 import math
 import time
 import hashlib
@@ -443,6 +444,7 @@ def get_or_create_enhanced_master(
 
     cache_filename = f"enhanced_v{version}_{model_name}_x{scale}.png"
     cache_path = os.path.join(orig_session_dir, cache_filename)
+    cache_meta_path = os.path.join(orig_session_dir, f"enhanced_v{version}_{model_name}_x{scale}.json")
 
     # 1. Return from disk cache if exists
     if os.path.exists(cache_path):
@@ -450,18 +452,29 @@ def get_or_create_enhanced_master(
             with Image.open(cache_path) as cached_img:
                 # Load fully into memory
                 cached_copy = cached_img.copy()
-                meta = {
+
+            cached_meta = {}
+            if os.path.exists(cache_meta_path):
+                try:
+                    with open(cache_meta_path, "r", encoding="utf-8") as f:
+                        cached_meta = json.load(f)
+                except Exception:
+                    cached_meta = {}
+
+            if not cached_meta:
+                cached_meta = {
                     "status": "ready",
                     "provider": "realesrgan",
                     "model": model_name,
                     "scale": scale,
                     "is_neural_sr": True,
-                    "is_cached": True,
-                    "cache_file": cache_filename,
-                    "enhanced_size": list(cached_copy.size),
                     "description": f"Loaded cached Real-ESRGAN master (v{version}).",
                 }
-                return cached_copy, meta
+
+            cached_meta["is_cached"] = True
+            cached_meta["cache_file"] = cache_filename
+            cached_meta["enhanced_size"] = list(cached_copy.size)
+            return cached_copy, cached_meta
         except Exception as e:
             logger.warning(f"Failed to read cached enhanced master: {e}")
 
@@ -473,11 +486,13 @@ def get_or_create_enhanced_master(
         tile_size=tile_size,
     )
 
-    # 3. Save to dedicated cache file (never touching working.png)
+    # 3. Save to dedicated cache file and metadata sidecar (never touching working.png)
     try:
         enhanced_img.save(cache_path, format="PNG")
         meta["cache_file"] = cache_filename
         meta["is_cached"] = False
+        with open(cache_meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
     except Exception as e:
         logger.warning(f"Could not persist enhanced master to cache: {e}")
 
