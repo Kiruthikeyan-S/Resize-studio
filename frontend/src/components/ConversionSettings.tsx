@@ -120,10 +120,11 @@ export const ConversionSettings: React.FC<ConversionSettingsProps> = ({
           </div>
           <div className="flex rounded-xl bg-slate-100 p-1 border border-slate-200">
             {[
-              { id: 'original', label: 'Original (100%)' },
+              { id: 'auto', label: 'Auto' },
               { id: 'enhanced', label: 'Real-ESRGAN' },
+              { id: 'original', label: 'Original' },
             ].map(({ id, label }) => {
-              const active = (settings.foreground_mode || (settings.enhance_foreground ? 'enhanced' : 'original')) === id;
+              const active = (settings.foreground_mode || (settings.enhance_foreground ? 'enhanced' : 'auto')) === id;
               return (
                 <button
                   key={id}
@@ -131,7 +132,7 @@ export const ConversionSettings: React.FC<ConversionSettingsProps> = ({
                   onClick={() =>
                     setSettings((prev) => ({
                       ...prev,
-                      foreground_mode: id as 'original' | 'enhanced',
+                      foreground_mode: id as 'auto' | 'original' | 'enhanced',
                       enhance_foreground: id === 'enhanced',
                     }))
                   }
@@ -141,8 +142,10 @@ export const ConversionSettings: React.FC<ConversionSettingsProps> = ({
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                   title={
-                    id === 'original'
-                      ? 'Preserves 100% of approved pixels with zero alteration'
+                    id === 'auto'
+                      ? 'Automatically upscales with Real-ESRGAN when source resolution is insufficient for output canvas'
+                      : id === 'original'
+                      ? 'Preserves approved source rectangle without neural super-resolution'
                       : 'CNN Real-ESRGAN super-resolution for crisper apparent detail'
                   }
                 >

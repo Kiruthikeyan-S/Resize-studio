@@ -51,6 +51,7 @@ export const App: React.FC = () => {
     quality: 90,
     sharpen: false,
     denoise: false,
+    foreground_mode: 'auto',
   });
 
   const activeImage = images.find((img) => img.image_id === activeImageId) || images[0] || null;
@@ -265,7 +266,7 @@ export const App: React.FC = () => {
         denoise: settings.denoise,
         allow_opencv_fallback: true,
         standard_fit: settings.standard_fit || 'stretch',
-        foreground_mode: settings.foreground_mode || (settings.enhance_foreground ? 'enhanced' : 'original'),
+        foreground_mode: settings.foreground_mode || (settings.enhance_foreground ? 'enhanced' : 'auto'),
         enhance_foreground: settings.enhance_foreground,
       });
 

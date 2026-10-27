@@ -42,7 +42,7 @@ class ConvertRequest(BaseModel):
     allow_opencv_fallback: bool = Field(default=True)
     prompt_hint: Optional[str] = None
     custom_crops: Optional[Dict[str, List[int]]] = None
-    foreground_mode: str = Field(default="original", description="original or enhanced")
+    foreground_mode: str = Field(default="auto", description="auto, original, or enhanced")
     enhance_foreground: Optional[bool] = Field(default=False)
     sr_scale: int = Field(default=4, ge=2, le=4)
 
@@ -129,7 +129,7 @@ class ConvertComparisonRequest(BaseModel):
     allow_opencv_fallback: bool = Field(default=True)
     prompt_hint: Optional[str] = None
     standard_fit: str = Field(default="stretch", description="stretch, contain, or cover")
-    foreground_mode: str = Field(default="original", description="original or enhanced")
+    foreground_mode: str = Field(default="auto", description="auto, original, or enhanced")
     enhance_foreground: Optional[bool] = Field(default=False)
     sr_scale: int = Field(default=4, ge=2, le=4)
 
@@ -188,7 +188,7 @@ async def convert_image(payload: ConvertRequest):
 
     if mode in ["comparison", "both"]:
         try:
-            effective_fg_mode = "enhanced" if (payload.enhance_foreground or payload.foreground_mode == "enhanced") else "original"
+            effective_fg_mode = "enhanced" if payload.enhance_foreground else (payload.foreground_mode if payload.foreground_mode in ("auto", "original", "enhanced") else "auto")
             results = generate_comparison_pipeline(
                 image_id=payload.image_id,
                 export_format=export_format,
@@ -263,7 +263,7 @@ async def convert_comparison_endpoint(payload: ConvertComparisonRequest):
         export_format = "jpeg"
 
     try:
-        effective_fg_mode = "enhanced" if (payload.enhance_foreground or payload.foreground_mode == "enhanced") else "original"
+        effective_fg_mode = "enhanced" if payload.enhance_foreground else (payload.foreground_mode if payload.foreground_mode in ("auto", "original", "enhanced") else "auto")
         results = generate_comparison_pipeline(
             image_id=payload.image_id,
             export_format=export_format,

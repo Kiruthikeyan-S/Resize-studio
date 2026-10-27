@@ -177,38 +177,64 @@ def composite_protected_foreground(
     else:
         feather = feather_radius
 
-    comp_mask = np.ones((final_ph, final_pw), dtype=np.float32)
-    if feather > 2:
-        # Feather only edges that border expanded background (avoiding frame boundary seams)
-        if final_ox > 0:
-            for i in range(min(feather, final_pw)):
-                v = 0.5 * (1.0 - np.cos(np.pi * i / feather))
-                comp_mask[:, i] = np.minimum(comp_mask[:, i], v)
-        if (target_w - (final_ox + final_pw)) > 0:
-            for i in range(min(feather, final_pw)):
-                v = 0.5 * (1.0 - np.cos(np.pi * i / feather))
-                comp_mask[:, final_pw - 1 - i] = np.minimum(comp_mask[:, final_pw - 1 - i], v)
-
-        if final_oy > 0:
-            for j in range(min(feather, final_ph)):
-                v = 0.5 * (1.0 - np.cos(np.pi * j / feather))
-                comp_mask[j, :] = np.minimum(comp_mask[j, :], v)
-        if (target_h - (final_oy + final_ph)) > 0:
-            for j in range(min(feather, final_ph)):
-                v = 0.5 * (1.0 - np.cos(np.pi * j / feather))
-                comp_mask[final_ph - 1 - j, :] = np.minimum(comp_mask[final_ph - 1 - j, :], v)
-
-    result = background_img.copy()
     if is_rgba:
+        result = background_img.copy()
         alpha = placed_fg.split()[-1]
-        alpha_np = (np.array(alpha).astype(np.float32) / 255.0) * comp_mask * 255.0
-        final_alpha = Image.fromarray(alpha_np.astype(np.uint8))
-        result.paste(placed_fg.convert("RGB"), (final_ox, final_oy), mask=final_alpha)
-    elif feather > 2:
-        mask_img = Image.fromarray((comp_mask * 255).astype(np.uint8))
-        result.paste(placed_fg, (final_ox, final_oy), mask=mask_img)
-    else:
-        result.paste(placed_fg, (final_ox, final_oy))
+        result.paste(placed_fg.convert("RGB"), (final_ox, final_oy), mask=alpha)
+        return result
+
+    # Outer-boundary seam blending: blend strictly OUTSIDE the protected source rectangle
+    # so 100% of the placed source rectangle pixels remain untouched by feathering.
+    bg_np = np.array(background_img.convert("RGB"), dtype=np.float32)
+    fg_np = np.array(placed_fg.convert("RGB"), dtype=np.float32)
+
+    if feather > 1:
+        # Left outer seam (in background region x < final_ox)
+        if final_ox > 0:
+            span = min(feather, final_ox)
+            left_edge = fg_np[:, 0, :]
+            for d in range(1, span + 1):
+                w = 0.5 * (1.0 - np.cos(np.pi * d / (span + 1)))
+                x = final_ox - d
+                bg_np[final_oy:final_oy + final_ph, x, :] = (
+                    (1.0 - w) * left_edge + w * bg_np[final_oy:final_oy + final_ph, x, :]
+                )
+        # Right outer seam (in background region x >= final_ox + final_pw)
+        right_space = target_w - (final_ox + final_pw)
+        if right_space > 0:
+            span = min(feather, right_space)
+            right_edge = fg_np[:, -1, :]
+            for d in range(1, span + 1):
+                w = 0.5 * (1.0 - np.cos(np.pi * d / (span + 1)))
+                x = final_ox + final_pw - 1 + d
+                bg_np[final_oy:final_oy + final_ph, x, :] = (
+                    (1.0 - w) * right_edge + w * bg_np[final_oy:final_oy + final_ph, x, :]
+                )
+        # Top outer seam (in background region y < final_oy)
+        if final_oy > 0:
+            span = min(feather, final_oy)
+            top_edge = fg_np[0, :, :]
+            for d in range(1, span + 1):
+                w = 0.5 * (1.0 - np.cos(np.pi * d / (span + 1)))
+                y = final_oy - d
+                bg_np[y, final_ox:final_ox + final_pw, :] = (
+                    (1.0 - w) * top_edge + w * bg_np[y, final_ox:final_ox + final_pw, :]
+                )
+        # Bottom outer seam (in background region y >= final_oy + final_ph)
+        bottom_space = target_h - (final_oy + final_ph)
+        if bottom_space > 0:
+            span = min(feather, bottom_space)
+            bot_edge = fg_np[-1, :, :]
+            for d in range(1, span + 1):
+                w = 0.5 * (1.0 - np.cos(np.pi * d / (span + 1)))
+                y = final_oy + final_ph - 1 + d
+                bg_np[y, final_ox:final_ox + final_pw, :] = (
+                    (1.0 - w) * bot_edge + w * bg_np[y, final_ox:final_ox + final_pw, :]
+                )
+
+    # Paste complete protected source rectangle with zero internal feathering
+    bg_np[final_oy:final_oy + final_ph, final_ox:final_ox + final_pw, :] = fg_np
+    result = Image.fromarray(np.clip(bg_np, 0, 255).round().astype(np.uint8))
 
     return result
 

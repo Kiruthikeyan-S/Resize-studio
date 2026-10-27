@@ -563,7 +563,7 @@ def generate_comparison_pipeline(
     allow_opencv_fallback: bool = False,
     prompt_hint: Optional[str] = None,
     standard_fit: str = "stretch",
-    foreground_mode: str = "original",
+    foreground_mode: str = "auto",
     sr_scale: int = 4,
 ) -> Dict[str, Any]:
     """
@@ -632,28 +632,37 @@ def generate_comparison_pipeline(
     except Exception:
         groq_cached_analysis = None
 
-    # Load and optionally super-resolve the master foreground once for all ratios
-    enhanced_master = None
-    sr_meta = None
-    if foreground_mode == "enhanced":
-        try:
-            from services.super_resolution import get_or_create_enhanced_master
-            version = int(orig_meta.get("version", 1))
-            with Image.open(orig_path) as master_for_sr:
-                master_for_sr = ensure_srgb_profile(master_for_sr)
-                enhanced_master, sr_meta = get_or_create_enhanced_master(
-                    image_id=image_id,
-                    source_img=master_for_sr,
-                    version=version,
-                    scale=sr_scale,
-                )
-        except Exception as e:
-            logger.warning(f"Super-resolution failed, falling back to original foreground: {e}")
-            sr_meta = {"status": "fallback", "provider": "studio_fallback", "error": str(e)}
-
     with Image.open(orig_path) as source_img:
         source_img = ensure_srgb_profile(source_img)
         orig_w, orig_h = source_img.size
+
+        # Inspect source resolution vs target canvases to decide if super-resolution is needed
+        from services.super_resolution import get_or_create_enhanced_master, needs_super_resolution
+        ratio_sr_map: Dict[str, bool] = {}
+        for _, r_cfg in RATIO_CONFIGS.items():
+            s_key = r_cfg["safe_key"]
+            if foreground_mode == "enhanced":
+                ratio_sr_map[s_key] = True
+            elif foreground_mode == "original":
+                ratio_sr_map[s_key] = False
+            else:
+                # 'auto' mode: automatically upscale when source resolution is insufficient for placed canvas area
+                ratio_sr_map[s_key] = needs_super_resolution(orig_w, orig_h, r_cfg["width"], r_cfg["height"])
+
+        enhanced_master = None
+        sr_meta = None
+        if any(ratio_sr_map.values()):
+            try:
+                version = int(orig_meta.get("version", 1))
+                enhanced_master, sr_meta = get_or_create_enhanced_master(
+                    image_id=image_id,
+                    source_img=source_img,
+                    version=version,
+                    scale=sr_scale,
+                )
+            except Exception as e:
+                logger.warning(f"Super-resolution failed, falling back to original foreground: {e}")
+                sr_meta = {"status": "fallback", "provider": "studio_fallback", "error": str(e)}
 
         for ratio_key, config in RATIO_CONFIGS.items():
             safe_key = config["safe_key"]
@@ -767,6 +776,9 @@ def generate_comparison_pipeline(
             # ==========================================
             # 2. METHOD B: GROQ-ASSISTED AI BACKGROUND EXTENSION
             # ==========================================
+            use_sr_for_ratio = ratio_sr_map.get(safe_key, False) and (enhanced_master is not None)
+            ratio_fg_mode = "enhanced" if use_sr_for_ratio else "original"
+
             ai_img, ai_meta = expand_background_groq(
                 img=source_img,
                 target_w=tw,
@@ -776,8 +788,8 @@ def generate_comparison_pipeline(
                 bg_color_hex=bg_color_hex,
                 is_transparent=is_transparent,
                 allow_opencv_fallback=allow_opencv_fallback,
-                foreground_img=enhanced_master if foreground_mode == "enhanced" else None,
-                foreground_mode=foreground_mode,
+                foreground_img=enhanced_master if use_sr_for_ratio else None,
+                foreground_mode=ratio_fg_mode,
             )
             if ai_img is not None and groq_cached_analysis is None and ai_meta.get("analysis"):
                 groq_cached_analysis = ai_meta["analysis"]
@@ -891,13 +903,13 @@ def generate_comparison_pipeline(
                 "provider": ai_provider,
                 "error_message": ai_err,
                 "is_generative_ai": ai_is_gen,
-                "enhancement_status": sr_meta.get("status") if sr_meta else ("original" if foreground_mode == "original" else "none"),
-                "enhancement_provider": sr_meta.get("provider") if sr_meta else ("none" if foreground_mode == "original" else "none"),
-                "foreground_mode": foreground_mode,
-                "foreground_fidelity": "pixel_identical" if foreground_mode == "original" else "ai_enhanced_detail",
+                "enhancement_status": sr_meta.get("status") if (use_sr_for_ratio and sr_meta) else "original",
+                "enhancement_provider": sr_meta.get("provider") if (use_sr_for_ratio and sr_meta) else "none",
+                "foreground_mode": ratio_fg_mode,
+                "foreground_fidelity": "pixel_identical" if ratio_fg_mode == "original" else "ai_enhanced_detail",
                 "foreground_description": (
-                    "Original customer-approved pixels preserved without alteration."
-                    if foreground_mode == "original"
+                    "Original customer-approved pixels preserved without alteration in protected source rectangle."
+                    if ratio_fg_mode == "original"
                     else "Real-ESRGAN CNN super-resolution enhanced foreground for improved apparent detail. Not claimed to be pixel-identical to source."
                 ),
                 "variants": ai_variants,
@@ -976,16 +988,16 @@ def generate_comparison_pipeline(
             "provider": overall_ai_provider,
             "error_message": overall_ai_message,
             "is_generative_ai": overall_ai_is_gen,
-            "enhancement_status": sr_meta.get("status") if sr_meta else ("original" if foreground_mode == "original" else "none"),
+            "enhancement_status": sr_meta.get("status") if sr_meta else "original",
             "enhancement_provider": sr_meta.get("provider") if sr_meta else "none",
-            "foreground_mode": foreground_mode,
-            "foreground_fidelity": "pixel_identical" if foreground_mode == "original" else "ai_enhanced_detail",
+            "foreground_mode": "enhanced" if any(item.get("foreground_mode") == "enhanced" for item in ai_outputs) else "original",
+            "foreground_fidelity": "ai_enhanced_detail" if any(item.get("foreground_mode") == "enhanced" for item in ai_outputs) else "pixel_identical",
             "outputs": ai_outputs,
         },
-        "foreground_mode": foreground_mode,
-        "enhancement_status": sr_meta.get("status") if sr_meta else ("original" if foreground_mode == "original" else "none"),
+        "foreground_mode": "enhanced" if any(item.get("foreground_mode") == "enhanced" for item in ai_outputs) else "original",
+        "enhancement_status": sr_meta.get("status") if sr_meta else "original",
         "enhancement_provider": sr_meta.get("provider") if sr_meta else "none",
-        "foreground_fidelity": "pixel_identical" if foreground_mode == "original" else "ai_enhanced_detail",
+        "foreground_fidelity": "ai_enhanced_detail" if any(item.get("foreground_mode") == "enhanced" for item in ai_outputs) else "pixel_identical",
         "rows": comparison_rows,
         "outputs": standard_outputs,
         "variants": all_variants,

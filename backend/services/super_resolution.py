@@ -497,3 +497,29 @@ def get_or_create_enhanced_master(
         logger.warning(f"Could not persist enhanced master to cache: {e}")
 
     return enhanced_img, meta
+
+
+def needs_super_resolution(
+    orig_w: int,
+    orig_h: int,
+    target_w: int,
+    target_h: int,
+) -> bool:
+    """
+    Determine whether the source image resolution (orig_w x orig_h) is insufficient
+    for the proportionally placed area inside the target canvas (target_w x target_h).
+    Returns True when the source image must be upscaled to fill its placed canvas region.
+    """
+    if orig_w <= 0 or orig_h <= 0 or target_w <= 0 or target_h <= 0:
+        return False
+    target_ratio = target_w / float(target_h)
+    orig_ratio = orig_w / float(orig_h)
+    if orig_ratio < target_ratio:
+        scale = target_h / float(orig_h)
+        placed_w = max(1, int(round(orig_w * scale)))
+        placed_h = target_h
+    else:
+        scale = target_w / float(orig_w)
+        placed_w = target_w
+        placed_h = max(1, int(round(orig_h * scale)))
+    return orig_w < placed_w or orig_h < placed_h

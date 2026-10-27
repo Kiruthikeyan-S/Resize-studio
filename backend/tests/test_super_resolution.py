@@ -416,3 +416,52 @@ def test_overall_status_honesty_when_background_uses_fallback():
                 assert ai["status"] == "fallback"
                 assert ai["provider"] == "studio_fallback"
                 assert ai["is_generative_ai"] is False
+
+
+# -------------------------------------------------------------------------
+# 9. Automatic Super-Resolution Decision & Outer-Boundary Seam Blending
+# -------------------------------------------------------------------------
+
+def test_automatic_upscaling_decision_for_small_vs_large_sources():
+    """Verify Method B automatically inspects source resolution and upscales when insufficient."""
+    from services.super_resolution import needs_super_resolution
+
+    # Small source (400x300) into 2048x2048 -> needs super-resolution
+    assert needs_super_resolution(400, 300, 2048, 2048) is True
+    # High-res source (3000x3000) into 2048x2048 -> does NOT need super-resolution
+    assert needs_super_resolution(3000, 3000, 2048, 2048) is False
+
+    # Default /api/convert-comparison call (foreground_mode="auto") on small image (80x60)
+    img_bytes = create_test_image("JPEG", (80, 60))
+    upload_res = client.post("/api/upload", files={"file": ("auto_sr.jpg", img_bytes, "image/jpeg")})
+    image_id = upload_res.json()["image_id"]
+
+    res_auto = client.post("/api/convert-comparison", json={"image_id": image_id})
+    assert res_auto.status_code == 200
+    data_auto = res_auto.json()
+    assert data_auto["foreground_mode"] == "enhanced"
+    for row in data_auto["rows"]:
+        assert row["ai"]["foreground_mode"] == "enhanced"
+
+
+def test_outer_boundary_seam_blending_preserves_entire_source_rectangle():
+    """Verify outer seam blending happens outside placed source box so placed foreground is 100% unfeathered."""
+    bg = Image.new("RGB", (400, 300), (20, 40, 60))
+    fg = Image.new("RGB", (300, 300), (220, 100, 50))
+
+    comp = composite_protected_foreground(
+        background_img=bg,
+        foreground_img=fg,
+        target_w=400,
+        target_h=300,
+        orig_w=300,
+        orig_h=300,
+        feather_radius=10,
+    )
+    comp_np = np.array(comp)
+    # Placed box is x=[50..350], y=[0..300]
+    # Every pixel inside x=[50..350] must be exact (220, 100, 50), including the boundary at x=50 and x=349!
+    assert tuple(comp_np[150, 50]) == (220, 100, 50)
+    assert tuple(comp_np[150, 349]) == (220, 100, 50)
+    # Pixel just outside (x=48) is smoothly blended between (220, 100, 50) and (20, 40, 60)
+    assert 20 < comp_np[150, 48, 0] < 220
