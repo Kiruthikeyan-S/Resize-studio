@@ -29,7 +29,7 @@ from services.image_processor import (
 from typing import List, Optional
 from pydantic import Field
 
-router = APIRouter(prefix="/api", tags=["upload"])
+router = APIRouter(tags=["upload"])
 
 
 class UploadResponse(BaseModel):

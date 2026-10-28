@@ -55,10 +55,13 @@ app.add_middleware(
     expose_headers=["Content-Disposition"],
 )
 
-# Register routes
-app.include_router(upload_router)
-app.include_router(convert_router)
-app.include_router(download_router)
+# Register routes with /api and root fallback (supports reverse proxies like Nginx that strip /api)
+app.include_router(upload_router, prefix="/api")
+app.include_router(upload_router, prefix="")
+app.include_router(convert_router, prefix="/api")
+app.include_router(convert_router, prefix="")
+app.include_router(download_router, prefix="/api")
+app.include_router(download_router, prefix="")
 
 
 @app.get("/")
@@ -81,6 +84,7 @@ async def root():
 
 
 @app.get("/api/health")
+@app.get("/health")
 async def health():
     return {"status": "ok"}
 

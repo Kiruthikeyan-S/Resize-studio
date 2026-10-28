@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from typing import List
 from services.crop_engine import RATIO_CONFIGS, resolve_ratio_config
 
-router = APIRouter(prefix="/api", tags=["download"])
+router = APIRouter(tags=["download"])
 
 
 @router.get("/preview/{image_id}/{ratio}")

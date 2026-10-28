@@ -27,7 +27,7 @@ from services.image_processor import (
 from services.crop_engine import RATIO_CONFIGS, resolve_ratio_config
 from services.groq_vision import analyze_image_with_groq, is_groq_enabled
 
-router = APIRouter(prefix="/api", tags=["convert"])
+router = APIRouter(tags=["convert"])
 
 
 class ConvertRequest(BaseModel):
