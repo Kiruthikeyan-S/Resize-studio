@@ -153,7 +153,7 @@ def analyze_scene_for_background_expansion(img_input) -> Dict[str, Any]:
             '"left_color_hex": "#RRGGBB", '
             '"right_color_hex": "#RRGGBB", '
             '"dominant_bg_hex": "#RRGGBB", '
-            '"extension_advice": "brief background continuation advice"'
+            '"extension_advice": "clean minimal studio background continuation advice without text, letters, watermarks, logos, or extra objects"'
             "}"
         )
 

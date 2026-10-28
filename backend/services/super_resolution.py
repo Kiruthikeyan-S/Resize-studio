@@ -382,6 +382,14 @@ def enhance_image_with_realesrgan(
     orig_w, orig_h = img.size
     is_rgba = (img.mode == "RGBA")
 
+    # Safety threshold on CPU without CUDA GPU (default 262,144 px, e.g. up to 512x512)
+    max_cpu_pixels = int(os.environ.get("REALESRGAN_MAX_CPU_PIXELS", "262144"))
+    force_cpu = os.environ.get("FORCE_CPU_REALESRGAN", "").lower() in ("1", "true", "yes")
+
+    if target_device == "cpu" and not force_cpu and (orig_w * orig_h > max_cpu_pixels):
+        logger.info(f"Image {orig_w}x{orig_h} ({orig_w*orig_h} px) exceeds CPU threshold; using Lanczos.")
+        return fallback_super_resolution(img, scale=effective_scale)
+
     try:
         t0 = time.time()
         rgb_pil = img.convert("RGB")
