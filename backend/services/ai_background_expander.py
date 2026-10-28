@@ -1,22 +1,15 @@
 """Product-Safe AI & Commercial Studio Background Expansion Service for Ratio Studio.
-Maintains 100% pixel fidelity for products, clothing, shoes, bottles, electronics, furniture, and jewelry.
+Maintains 100% pixel fidelity for jewellery, products, vehicles, landscapes, and portraits.
 
 Features:
-1. Stop Unwanted Background Text:
-   - Default clean, minimal, realistic studio background.
-   - Strict negative prompt forbidding fake words, logos, labels, letters, numbers, watermarks, and brand marks.
-   - Unwanted text validation via RapidOCR with automatic retry and plain studio fallback.
-   - Respects user-requested text only when explicitly provided.
-2. Complete Product Preservation:
-   - Foreground segmentation mask protects 100% of the product.
-   - Preserves original colors, shapes, printed designs, and existing text (e.g. logos or T-shirt prints).
-   - Generates background separately without letting the AI model redraw, replace, or modify the product.
-   - Proportional canvas fit with balanced padding (no distortion, not unnecessarily small).
-3. Natural Ground Contact Shadow:
-   - Renders a realistic soft contact shadow under the product base so it sits photorealistically on the studio floor.
+1. Cloudflare Workers AI Inpainting: Uses @cf/runwayml/stable-diffusion-v1-5-inpainting with
+   configurable width/height matching the exact aspect ratio of each target preset (1:1, 4:5, 3:4, 16:9, 5:4).
+2. Aspect-Ratio-Preserving Canvas Construction: No squeezing into 512x512, no compositional distortion.
+3. Strict Subject Protection: Composites pristine customer-approved cropped image over generated background.
 4. Honest Status & Fallback Reporting:
-   - 'ready' with provider 'cloudflare_workers_ai' and is_generative_ai=True only when generation succeeds and passes text validation.
-   - 'fallback' with provider 'studio_fallback' when AI is unavailable or text retry fails.
+   - 'ready' with provider 'cloudflare_workers_ai' and is_generative_ai=True only when generation succeeds.
+   - 'fallback' with provider 'studio_fallback' and is_generative_ai=False when AI is unavailable.
+   - Never mislabels OpenCV fallback as generative AI.
 """
 
 import os
@@ -29,8 +22,7 @@ import logging
 from typing import Optional, Tuple, Dict, Any, List
 import numpy as np
 import cv2
-from PIL import Image, ImageOps, ImageDraw, ImageFilter
-import requests
+from PIL import Image, ImageOps, ImageDraw
 
 logger = logging.getLogger(__name__)
 
@@ -46,28 +38,10 @@ try:
 except Exception:
     pass
 
-try:
-    from services.groq_vision import (
-        analyze_scene_for_background_expansion,
-        is_groq_enabled,
-        _local_scene_heuristic,
-    )
-    from services.product_segmenter import (
-        segment_product,
-        fit_product_cutout_proportional,
-        render_natural_ground_shadow,
-    )
-except ImportError:
-    from backend.services.groq_vision import (
-        analyze_scene_for_background_expansion,
-        is_groq_enabled,
-        _local_scene_heuristic,
-    )
-    from backend.services.product_segmenter import (
-        segment_product,
-        fit_product_cutout_proportional,
-        render_natural_ground_shadow,
-    )
+from services.groq_vision import (
+    analyze_scene_for_background_expansion,
+    is_groq_enabled,
+)
 
 
 def is_cloudflare_enabled() -> bool:
@@ -84,27 +58,37 @@ def get_configured_ai_provider() -> str:
         pass
 
     if is_cloudflare_enabled():
-        return "cloudflare_workers_ai"
-    return "studio_fallback"
+        return "cloudflare"
+    if os.environ.get("GROQ_API_KEY"):
+        return "groq"
+    return "studio"
 
 
 def get_model_working_dimensions(target_w: int, target_h: int) -> Tuple[int, int]:
-    """Calculate aspect-ratio-preserving model canvas dimensions (multiples of 8, ~512-768px)."""
-    target_ratio = float(target_w) / float(target_h)
-    target_area = 512.0 * 512.0
-    raw_h = math.sqrt(target_area / target_ratio)
-    raw_w = raw_h * target_ratio
-
-    work_w = int(round(raw_w / 8.0)) * 8
-    work_h = int(round(raw_h / 8.0)) * 8
-
-    work_w = max(384, min(896, work_w))
-    work_h = max(384, min(896, work_h))
-
-    work_w = int(round(work_w / 8.0)) * 8
-    work_h = int(round(work_h / 8.0)) * 8
-
-    return work_w, work_h
+    """
+    Return model-compatible dimensions preserving the target aspect ratio.
+    Dimensions are multiples of 8 (required by SD 1.5 inpainting).
+    """
+    ratio = target_w / float(target_h)
+    if abs(ratio - 1.0) < 0.05:             # 1:1 Square (2048x2048)
+        return 768, 768
+    elif abs(ratio - (4.0 / 5.0)) < 0.05:   # 4:5 Portrait (1600x2000)
+        return 640, 800
+    elif abs(ratio - (3.0 / 4.0)) < 0.05:   # 3:4 Portrait (1536x2048)
+        return 768, 1024
+    elif abs(ratio - (16.0 / 9.0)) < 0.05:  # 16:9 Landscape (2560x1440)
+        return 1024, 576
+    elif abs(ratio - (5.0 / 4.0)) < 0.05:   # 5:4 Landscape (2000x1600)
+        return 1000, 800
+    else:
+        # Generic computation preserving aspect ratio, multiple of 8
+        if ratio >= 1.0:
+            w = 1024
+            h = max(256, (int(round(1024 / ratio)) // 8) * 8)
+        else:
+            h = 1024
+            w = max(256, (int(round(1024 * ratio)) // 8) * 8)
+        return w, h
 
 
 def calculate_expansion_canvas(
@@ -114,64 +98,54 @@ def calculate_expansion_canvas(
     target_h: int,
     source_img: Optional[Image.Image] = None,
 ) -> Tuple[int, int, int, int, str]:
-    """Calculate proportional placement for expansion."""
-    target_ratio = float(target_w) / float(target_h)
-    source_ratio = float(orig_w) / float(orig_h)
+    """
+    Calculate proportional placement of source image within target canvas.
+    Returns: (placed_w, placed_h, offset_x, offset_y, expansion_type)
+    expansion_type is one of: 'none', 'horizontal', 'vertical'.
+    """
+    target_ratio = target_w / float(target_h)
+    orig_ratio = orig_w / float(orig_h)
 
-    if abs(target_ratio - source_ratio) < 0.005:
+    # If aspect ratios are virtually identical (within 1%)
+    if abs(orig_ratio - target_ratio) / target_ratio < 0.01:
         return target_w, target_h, 0, 0, "none"
 
-    scale = min(target_w / orig_w, target_h / orig_h)
-    placed_w = max(1, int(round(orig_w * scale)))
-    placed_h = max(1, int(round(orig_h * scale)))
+    if orig_ratio < target_ratio:
+        # Target is wider than source -> needs horizontal extension (left & right)
+        scale = target_h / float(orig_h)
+        placed_h = target_h
+        placed_w = max(1, int(round(orig_w * scale)))
+        if placed_w > target_w:
+            placed_w = target_w
+        offset_x = (target_w - placed_w) // 2
+        offset_y = 0
+        return placed_w, placed_h, offset_x, offset_y, "horizontal"
+    else:
+        # Target is taller than source -> needs vertical extension (top & bottom)
+        scale = target_w / float(orig_w)
+        placed_w = target_w
+        placed_h = max(1, int(round(orig_h * scale)))
+        if placed_h > target_h:
+            placed_h = target_h
+        offset_x = 0
 
-    offset_x = (target_w - placed_w) // 2
-    offset_y = (target_h - placed_h) // 2
+        # Check if bottom of subject is cut off by comparing variance
+        bottom_cut_off = False
+        if source_img is not None:
+            try:
+                np_src = np.array(source_img.convert("RGB"))
+                top_v = float(np.var(np_src[:12, :, :]))
+                bot_v = float(np.var(np_src[-12:, :, :]))
+                if bot_v > top_v * 1.5 and bot_v > 1500.0:
+                    bottom_cut_off = True
+            except Exception:
+                pass
 
-    ext_type = "horizontal" if target_ratio > source_ratio else "vertical"
-    return placed_w, placed_h, offset_x, offset_y, ext_type
-
-
-def validate_background_for_unwanted_text(
-    bg_img: Image.Image,
-    allowed_text: Optional[str] = None,
-) -> Tuple[bool, List[str]]:
-    """
-    Validate that the generated background contains NO unwanted text, letters, numbers,
-    watermarks, logos, or brand marks.
-    Returns: (is_clean, detected_texts)
-    """
-    try:
-        from rapidocr_onnxruntime import RapidOCR
-        engine = RapidOCR()
-        np_bg = np.array(bg_img.convert("RGB"))
-        ocr_res, _ = engine(np_bg)
-
-        if not ocr_res:
-            return True, []
-
-        detected = [item[1].strip() for item in ocr_res if item and len(item) > 1 and item[1].strip()]
-
-        if allowed_text:
-            allowed_norm = allowed_text.lower()
-            allowed_tokens = set(allowed_norm.split())
-            cleaned_detected = []
-            for t in detected:
-                t_norm = t.lower()
-                if t_norm in allowed_norm or all(w in allowed_tokens for w in t_norm.split()):
-                    continue
-                cleaned_detected.append(t)
-            detected = cleaned_detected
-
-        if not detected:
-            return True, []
-
-        logger.warning(f"Unwanted text detected in background: {detected}")
-        return False, detected
-
-    except Exception as e:
-        logger.warning(f"OCR background text validation exception: {e}")
-        return True, []
+        if bottom_cut_off:
+            offset_y = target_h - placed_h  # Align to bottom frame naturally
+        else:
+            offset_y = (target_h - placed_h) // 2
+        return placed_w, placed_h, offset_x, offset_y, "vertical"
 
 
 def composite_protected_foreground(
@@ -184,7 +158,13 @@ def composite_protected_foreground(
     source_img_for_geometry: Optional[Image.Image] = None,
     feather_radius: Optional[int] = None,
 ) -> Image.Image:
-    """Composite protected foreground over generated background."""
+    """
+    Composite the protected foreground image over the generated background.
+    - Preserves aspect ratio and proportional framing.
+    - Uses anti-aliased cosine feathering at the boundaries to prevent sharp rectangular cut seams.
+    - Handles RGBA transparency seamlessly without fringing.
+    - Works with either the original approved working.png or a Real-ESRGAN enhanced foreground.
+    """
     final_pw, final_ph, final_ox, final_oy, _ = calculate_expansion_canvas(
         orig_w, orig_h, target_w, target_h, source_img=source_img_for_geometry or foreground_img
     )
@@ -192,18 +172,24 @@ def composite_protected_foreground(
     placed_fg = foreground_img.resize((final_pw, final_ph), Image.Resampling.LANCZOS)
     is_rgba = (placed_fg.mode == "RGBA")
 
+    if feather_radius is None:
+        feather = min(14, max(4, min(final_pw, final_ph) // 25))
+    else:
+        feather = feather_radius
+
     if is_rgba:
         result = background_img.copy()
         alpha = placed_fg.split()[-1]
         result.paste(placed_fg.convert("RGB"), (final_ox, final_oy), mask=alpha)
         return result
 
+    # Outer-boundary seam blending: blend strictly OUTSIDE the protected source rectangle
+    # so 100% of the placed source rectangle pixels remain untouched by feathering.
     bg_np = np.array(background_img.convert("RGB"), dtype=np.float32)
     fg_np = np.array(placed_fg.convert("RGB"), dtype=np.float32)
 
-    feather = feather_radius or min(14, max(4, min(final_pw, final_ph) // 25))
-
     if feather > 1:
+        # Left outer seam (in background region x < final_ox)
         if final_ox > 0:
             span = min(feather, final_ox)
             left_edge = fg_np[:, 0, :]
@@ -213,6 +199,7 @@ def composite_protected_foreground(
                 bg_np[final_oy:final_oy + final_ph, x, :] = (
                     (1.0 - w) * left_edge + w * bg_np[final_oy:final_oy + final_ph, x, :]
                 )
+        # Right outer seam (in background region x >= final_ox + final_pw)
         right_space = target_w - (final_ox + final_pw)
         if right_space > 0:
             span = min(feather, right_space)
@@ -223,6 +210,7 @@ def composite_protected_foreground(
                 bg_np[final_oy:final_oy + final_ph, x, :] = (
                     (1.0 - w) * right_edge + w * bg_np[final_oy:final_oy + final_ph, x, :]
                 )
+        # Top outer seam (in background region y < final_oy)
         if final_oy > 0:
             span = min(feather, final_oy)
             top_edge = fg_np[0, :, :]
@@ -232,6 +220,7 @@ def composite_protected_foreground(
                 bg_np[y, final_ox:final_ox + final_pw, :] = (
                     (1.0 - w) * top_edge + w * bg_np[y, final_ox:final_ox + final_pw, :]
                 )
+        # Bottom outer seam (in background region y >= final_oy + final_ph)
         bottom_space = target_h - (final_oy + final_ph)
         if bottom_space > 0:
             span = min(feather, bottom_space)
@@ -243,8 +232,11 @@ def composite_protected_foreground(
                     (1.0 - w) * bot_edge + w * bg_np[y, final_ox:final_ox + final_pw, :]
                 )
 
+    # Paste complete protected source rectangle with zero internal feathering
     bg_np[final_oy:final_oy + final_ph, final_ox:final_ox + final_pw, :] = fg_np
-    return Image.fromarray(np.clip(bg_np, 0, 255).round().astype(np.uint8))
+    result = Image.fromarray(np.clip(bg_np, 0, 255).round().astype(np.uint8))
+
+    return result
 
 
 def studio_texture_background_expansion(
@@ -262,7 +254,14 @@ def studio_texture_background_expansion(
     foreground_img: Optional[Image.Image] = None,
     **kwargs
 ) -> Image.Image:
-    """Deterministic studio background expansion with soft atmospheric gradient."""
+    """
+    High-fidelity stripe-free background expansion:
+    1. Uniform/Studio backdrops: Extends seamless matching studio tone.
+    2. Scenery/Photographs: Uses edge-replicated multi-scale atmospheric diffusion:
+       - Never mirrors thin strips (no accordion barcode scanlines, comb ripples, or repeating patterns).
+       - Uses 2D Gaussian blur + cubic Hermite blending to ensure smooth monotonic gradient transitions.
+       - Composites pristine original source pixels with anti-aliased smooth feathering.
+    """
     is_rgba = (img_rgb.mode == "RGBA")
     if is_transparent and is_rgba:
         placed_img = img_rgb.resize((placed_w, placed_h), resample=Image.Resampling.LANCZOS)
@@ -287,6 +286,7 @@ def studio_texture_background_expansion(
     info = vision_info or {}
     scene_type = info.get("scene_type", "scenery")
 
+    # Analyze perimeter color variance to distinguish uniform studio backdrops from scenery
     bw = max(2, min(16, min(placed_w, placed_h) // 20))
     perim_samples = np.concatenate([
         placed_np[:bw, :, :].reshape(-1, 3),
@@ -308,15 +308,20 @@ def studio_texture_background_expansion(
 
     canvas_np = np.zeros((target_h, target_w, 3), dtype=np.uint8)
 
+    # Handle solid/studio backgrounds
     if custom_bg is not None or scene_type in ["studio_solid", "graphic"] or perim_std < 5.0:
         fill_color = custom_bg if custom_bg is not None else tuple(int(c) for c in perim_median)
         canvas_np[:, :] = fill_color
     else:
+        # Edge-replicated border canvas (eliminates periodic accordion barcode scanlines completely!)
         canvas_np = cv2.copyMakeBorder(placed_np, pad_top, pad_bottom, pad_left, pad_right, cv2.BORDER_REPLICATE)
+
+        # Multi-scale atmospheric diffusion across expansion wings
         kw = max(31, ((pad_left + pad_right) // 3) | 1) if (pad_left + pad_right) > 0 else 31
         kh = max(31, ((pad_top + pad_bottom) // 3) | 1) if (pad_top + pad_bottom) > 0 else 31
         diffused = cv2.GaussianBlur(canvas_np, (kw, kh), 0)
 
+        # Hermite smoothstep blend on wings
         if pad_left > 0:
             t = np.linspace(1.0, 0.0, pad_left, dtype=np.float32)
             w_b = (t * t * (3.0 - 2.0 * t))[None, :, None]
@@ -349,6 +354,7 @@ def studio_texture_background_expansion(
                 diffused[target_h - pad_bottom:, :].astype(np.float32) * (w_b * 0.95)
             ).astype(np.uint8)
 
+    # 3. Separate background generation from protected foreground compositing
     res_img = Image.fromarray(canvas_np)
     effective_fg = foreground_img if foreground_img is not None else placed_img
     return composite_protected_foreground(
@@ -362,83 +368,211 @@ def studio_texture_background_expansion(
     )
 
 
-def generate_clean_ai_studio_background(
+def call_groq_vision_guided_expansion(
+    source_img: Image.Image,
     target_w: int,
     target_h: int,
-    prompt_hint: Optional[str] = None,
+    prompt: Optional[str] = None,
     vision_info: Optional[Dict[str, Any]] = None,
-    allowed_text: Optional[str] = None,
+    bg_color_hex: str = "#F8FAFC",
+    is_transparent: bool = False,
+) -> Tuple[Optional[Image.Image], Optional[Dict[str, Any]], Optional[str]]:
+    """
+    Executes Groq Vision analysis (or uses cached vision_info) and performs
+    intelligent studio background expansion.
+    Returns: (expanded_image, vision_info, error_message)
+    """
+    try:
+        if vision_info is None:
+            vision_info = analyze_scene_for_background_expansion(source_img)
+
+        w, h = source_img.size
+        pw, ph, ox, oy, ext_type = calculate_expansion_canvas(w, h, target_w, target_h, source_img=source_img)
+
+        expanded = studio_texture_background_expansion(
+            img_rgb=source_img,
+            target_w=target_w,
+            target_h=target_h,
+            placed_w=pw,
+            placed_h=ph,
+            offset_x=ox,
+            offset_y=oy,
+            expansion_type=ext_type,
+            bg_color_hex=bg_color_hex,
+            is_transparent=is_transparent,
+            vision_info=vision_info,
+        )
+        return expanded, vision_info, None
+
+    except Exception as e:
+        return None, None, f"Groq vision-assisted expansion error: {str(e)[:120]}"
+
+
+def call_cloudflare_workers_ai_inpainting(
+    source_img: Image.Image,
+    target_w: int,
+    target_h: int,
+    prompt: Optional[str] = None,
+    vision_info: Optional[Dict[str, Any]] = None,
+    bg_color_hex: Optional[str] = None,
+    is_transparent: bool = False,
+    foreground_img: Optional[Image.Image] = None,
 ) -> Tuple[Optional[Image.Image], Optional[str]]:
     """
-    Generate a separate clean studio background using Cloudflare Workers AI.
+    Call Cloudflare Workers AI inpainting model with model-compatible dimensions
+    preserving the target aspect ratio (no 512x512 squeezing).
     Features:
-    1. Default clean, minimal, realistic studio cyclorama background.
-    2. Strict negative prompt preventing letters, words, numbers, logos, watermarks, and branding.
-    3. RapidOCR validation: automatically detects unwanted text and retries if necessary.
+    1. Atmospheric pre-diffused outer wings: prevents duplicate subject hallucinations (extra butterflies/birds/wheels).
+    2. Comprehensive scene-aware prompt + strict negative prompt: prevents tripods, marble tiles, mountains, and black bars.
+    3. Blank/black output guard: automatically rejects filtered or corrupted all-black frames.
+    4. Anti-aliased cosine-feathered blending: eliminates harsh rectangular cut seams.
+    5. Preserves pristine customer-approved cropped image at 100% resolution.
+    Returns: (generated_image, error_message)
     """
     account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID")
     api_token = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
     if not account_id or not api_token:
-        return None, "Cloudflare credentials not configured"
+        return None, "Cloudflare credentials not configured in backend/.env"
 
-    work_w, work_h = get_model_working_dimensions(target_w, target_h)
+    try:
+        import requests
+        from services.groq_vision import _local_scene_heuristic
 
-    # Clean studio prompt: by default, plain studio backdrop with no text or props
-    if prompt_hint and any(kw in prompt_hint.lower() for kw in ["background", "backdrop", "studio", "environment"]):
-        base_prompt = prompt_hint
-    else:
-        scene_type = (vision_info or {}).get("scene_type", "product")
-        dom_hex = (vision_info or {}).get("dominant_bg_hex", "#F0F0F5")
-        base_prompt = (
-            f"clean minimal professional studio background, smooth cyclorama backdrop matching tone {dom_hex}, "
-            "soft diffused ambient lighting, neutral seamless studio floor, subtle soft ground shadow, "
-            "photorealistic, 8k, empty room, zero objects, no text"
+        orig_w, orig_h = source_img.size
+        # 1. Aspect-ratio preserving working dimensions (multiples of 8)
+        work_w, work_h = get_model_working_dimensions(target_w, target_h)
+
+        # 2. Placement within working dimensions
+        pw, ph, ox, oy, ext_type = calculate_expansion_canvas(
+            orig_w, orig_h, work_w, work_h, source_img=source_img
         )
 
-    strict_negative = (
-        "text, letters, words, writing, numbers, typography, font, alphabet, watermark, logo, brand mark, "
-        "signature, label, tag, sticker, signage, billboard, poster, duplicate product, extra items, "
-        "cluttered props, furniture, messy background, artifacts, distortion"
-    )
+        if ox == 0 and oy == 0:
+            return source_img.resize((target_w, target_h), Image.Resampling.LANCZOS), None
 
-    url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/bytedance/stable-diffusion-xl-lightning"
-    headers = {"Authorization": f"Bearer {api_token}"}
+        placed_src = source_img.resize((pw, ph), Image.Resampling.LANCZOS)
+        placed_np = np.array(placed_src)
 
-    # Attempt 1
-    for attempt in range(2):
-        cur_neg = strict_negative if attempt == 0 else (
-            strict_negative + ", completely blank empty studio, strictly zero characters, no typography"
+        pad_left, pad_right = ox, max(0, work_w - (ox + pw))
+        pad_top, pad_bottom = oy, max(0, work_h - (oy + ph))
+
+        # 3. Canvas setup: pre-fill outer wings with edge-replication and atmospheric diffusion.
+        # Diffusing the outer wings removes sharp subject edge fragments (like butterfly wing tips or car wheels),
+        # so the inpainting model sees clean ambient color and lighting rather than an object to duplicate.
+        canvas_np = cv2.copyMakeBorder(placed_np, pad_top, pad_bottom, pad_left, pad_right, cv2.BORDER_REPLICATE)
+        kw = max(31, ((pad_left + pad_right) // 3) | 1) if (pad_left + pad_right) > 0 else 31
+        kh = max(31, ((pad_top + pad_bottom) // 3) | 1) if (pad_top + pad_bottom) > 0 else 31
+        diffused = cv2.GaussianBlur(canvas_np, (kw, kh), 0)
+
+        if pad_top > 0:
+            canvas_np[:pad_top, :] = diffused[:pad_top, :]
+        if pad_bottom > 0:
+            canvas_np[work_h - pad_bottom:, :] = diffused[work_h - pad_bottom:, :]
+        if pad_left > 0:
+            canvas_np[:, :pad_left] = diffused[:, :pad_left]
+        if pad_right > 0:
+            canvas_np[:, work_w - pad_right:] = diffused[:, work_w - pad_right:]
+
+        canvas = Image.fromarray(canvas_np)
+
+        # 4. Inpainting mask: 255 (generate) on the extended canvas, 0 (protect) on original subject
+        # Include a 4px transition overlap so the inpainting boundary merges seamlessly
+        mask_np = np.zeros((work_h, work_w), dtype=np.uint8)
+        if pad_top > 0:
+            mask_np[:pad_top + 4, :] = 255
+        if pad_bottom > 0:
+            mask_np[work_h - pad_bottom - 4:, :] = 255
+        if pad_left > 0:
+            mask_np[:, :pad_left + 4] = 255
+        if pad_right > 0:
+            mask_np[:, work_w - pad_right - 4:] = 255
+        mask = Image.fromarray(mask_np)
+
+        # 5. Extract scene information for accurate prompt and negative prompt
+        scene_info = vision_info or _local_scene_heuristic(source_img)
+        top_hex = scene_info.get("top_color_hex", "#808080").lstrip("#")
+        bot_hex = scene_info.get("bottom_color_hex", "#808080").lstrip("#")
+        try:
+            top_rgb = tuple(int(top_hex[i:i+2], 16) for i in (0, 2, 4))
+            bot_rgb = tuple(int(bot_hex[i:i+2], 16) for i in (0, 2, 4))
+        except Exception:
+            top_rgb, bot_rgb = (128, 128, 128), (128, 128, 128)
+
+        # Universal negative prompt preventing duplicate objects, equipment, and artifacts
+        universal_negative = (
+            "duplicate subject, extra subjects, second animal, second bird, second butterfly, second vehicle, second car, "
+            "tripod, camera equipment, studio lights, softbox, stand, umbrella, lamps, furniture, marble tiles, floor tiles, "
+            "mountains, rocky terrain, unrelated scenery, text, watermark, logo, border, black bars, dark frame, seam, "
+            "split screen, collage, multi-panel, discontinuous composition, distortion"
         )
+
+        if prompt:
+            final_prompt = prompt
+            final_negative = universal_negative
+        elif scene_info.get("has_sky") or (top_rgb[2] > top_rgb[0] * 1.05 and top_rgb[2] > 95):
+            final_prompt = "soft natural sky with smooth diffused light clouds, out of focus matching environment, clean seamless empty backdrop, photorealistic"
+            final_negative = "mountains, rocks, trees, ground, hills, landscape, duplicate bird, animal, person, tripod, equipment, text, watermark, split scene, seam"
+        elif top_rgb[1] > top_rgb[0] * 1.04 and top_rgb[1] > top_rgb[2]:
+            final_prompt = "soft blurred natural garden foliage bokeh, delicate warm outdoor morning lighting, seamless macro photography background, photorealistic"
+            final_negative = "duplicate animal, insect, butterfly, flower, text, watermark, mountains, buildings, split frame, seam"
+        elif abs(top_rgb[0] - top_rgb[1]) < 18 and abs(top_rgb[1] - top_rgb[2]) < 18 and np.std(top_rgb) < 10.0:
+            bw = max(2, min(16, min(pw, ph) // 20))
+            perim_std = float(np.std(placed_np[:bw, :, :]))
+            if perim_std < 8.0:
+                final_prompt = "seamless clean minimal studio backdrop, soft diffused ambient lighting, empty background, smooth gradient, photorealistic"
+                final_negative = "tripod, camera, stand, softbox, lamp, umbrella, furniture, tiles, duplicate product, text, watermark, logo"
+            else:
+                final_prompt = "seamless architectural building wall and outdoor ground continuation, soft diffused ambient lighting, clean background, matching environment, photorealistic"
+                final_negative = universal_negative
+        else:
+            final_prompt = "soft out of focus bokeh backdrop, smooth natural color continuation, diffused lighting, clean empty background, photorealistic"
+            final_negative = universal_negative
+
+        buf_i, buf_m = io.BytesIO(), io.BytesIO()
+        canvas.save(buf_i, format="PNG")
+        mask.save(buf_m, format="PNG")
+
+        model_name = "@cf/runwayml/stable-diffusion-v1-5-inpainting"
+        url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model_name}"
+        headers = {"Authorization": f"Bearer {api_token}"}
         payload = {
-            "prompt": base_prompt,
-            "negative_prompt": cur_neg,
+            "prompt": final_prompt,
+            "negative_prompt": final_negative,
+            "image": list(buf_i.getvalue()),
+            "mask": list(buf_m.getvalue()),
             "width": work_w,
             "height": work_h,
         }
 
-        try:
-            res = requests.post(url, headers=headers, json=payload, timeout=25.0)
-            if res.status_code != 200:
-                continue
+        res = requests.post(url, headers=headers, json=payload, timeout=35.0)
+        if res.status_code != 200:
+            return None, f"Cloudflare API returned status {res.status_code}: {res.text[:120]}"
 
-            bg_raw = Image.open(io.BytesIO(res.content)).convert("RGB")
-            if float(np.mean(np.array(bg_raw))) < 8.0:
-                continue
+        gen_img = Image.open(io.BytesIO(res.content)).convert("RGB")
 
-            # Validate for unwanted text in the background
-            is_clean, detected_texts = validate_background_for_unwanted_text(bg_raw, allowed_text=allowed_text)
-            if is_clean:
-                final_bg = bg_raw.resize((target_w, target_h), Image.Resampling.LANCZOS)
-                return final_bg, None
+        # Guard: check for blank/black output (e.g. NSFW safety filter or model error)
+        gen_arr = np.array(gen_img)
+        if float(np.mean(gen_arr)) < 6.0:
+            return None, "Cloudflare API returned blank/black frame (filtered). Falling back to studio expansion."
 
-            logger.warning(f"Attempt {attempt+1}: AI background contained unwanted text {detected_texts}, retrying...")
+        # 6. Scale generated background to final target dimensions
+        final_bg = gen_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
 
-        except Exception as e:
-            logger.warning(f"Cloudflare background generation attempt {attempt+1} error: {e}")
+        # 7. Separate background generation from protected foreground compositing
+        effective_fg = foreground_img if foreground_img is not None else source_img
+        final_img = composite_protected_foreground(
+            background_img=final_bg,
+            foreground_img=effective_fg,
+            target_w=target_w,
+            target_h=target_h,
+            orig_w=orig_w,
+            orig_h=orig_h,
+            source_img_for_geometry=source_img,
+        )
+        return final_img, None
 
-    return None, "Cloudflare background generation failed text validation or service timeout"
-
-
+    except Exception as e:
+        return None, f"Cloudflare inpainting error: {str(e)[:120]}"
 def expand_background_groq(
     img: Image.Image,
     target_w: int,
@@ -453,14 +587,9 @@ def expand_background_groq(
     **kwargs
 ) -> Tuple[Optional[Image.Image], Dict[str, Any]]:
     """
-    Method B: AI-Enhanced Product Background Generation & Protection.
-    Workflow:
-    1. Separate foreground product using product_segmenter (never crops or modifies original pixels).
-    2. Generate clean, realistic studio background separately (no unwanted text/logos).
-    3. Validate background with OCR.
-    4. Fit product cutout proportionally with comfortable padding.
-    5. Render soft natural contact shadow beneath product.
-    6. Composite protected product cutout onto background.
+    Method B: AI Background Outpainting.
+    Uses genuine Cloudflare Workers AI Inpainting model preserving the exact target aspect ratio.
+    If unavailable, uses honest fallback attribution.
     """
     orig_w, orig_h = img.size
     pw, ph, ox, oy, ext_type = calculate_expansion_canvas(orig_w, orig_h, target_w, target_h, source_img=img)
@@ -476,57 +605,58 @@ def expand_background_groq(
             "canvas_size": [target_w, target_h],
             "placed_box": [0, 0, target_w, target_h],
             "product_preserved": True,
-            "unwanted_text_detected": False,
-            "text_validated": True,
             "foreground_mode": foreground_mode,
+            "foreground_fidelity": "pixel_identical" if foreground_mode == "original" else "ai_enhanced_detail",
+            "foreground_status": "original_approved" if foreground_mode == "original" else "realesrgan_enhanced",
+            "foreground_description": (
+                "Original customer-approved pixels preserved without alteration."
+                if foreground_mode == "original"
+                else "Real-ESRGAN CNN super-resolution enhanced foreground for improved apparent detail. Not claimed to be pixel-identical to source."
+            ),
             "error_message": None,
         }
         return resized, meta
 
-    # Step 1: Separate foreground product cleanly without altering pixels
-    source_to_segment = img
-    cutout, alpha_mask, bbox, seg_meta = segment_product(source_to_segment)
-
-    # If Real-ESRGAN enhanced master is provided, transfer alpha mask to enhanced master
-    if foreground_img is not None and foreground_img.size != cutout.size:
-        fw, fh = foreground_img.size
-        scaled_alpha = alpha_mask.resize((fw, fh), Image.Resampling.LANCZOS)
-        enhanced_cutout = Image.new("RGBA", (fw, fh), (0, 0, 0, 0))
-        enhanced_cutout.paste(foreground_img.convert("RGB"), (0, 0), mask=scaled_alpha)
-        effective_cutout = enhanced_cutout
-    else:
-        effective_cutout = cutout
-
-    # Step 2: Proportional Canvas Fit (balanced 10% padding so product is never cramped or small)
-    placed_cutout, pox, poy, ppw, pph = fit_product_cutout_proportional(
-        effective_cutout, target_w, target_h, padding=0.10
-    )
-
-    # Step 3: Attempt AI Background Generation if Cloudflare credentials are configured
-    ai_bg = None
-    ai_err = None
-    allowed_text = None
-    if prompt_hint and any(kw in prompt_hint.lower() for kw in ["text", "write", "say", "word", "label"]):
-        allowed_text = prompt_hint
-
+    # 1. Attempt genuine generative AI inpainting if Cloudflare credentials are configured
     if is_cloudflare_enabled():
-        ai_bg, ai_err = generate_clean_ai_studio_background(
+        cf_img, cf_err = call_cloudflare_workers_ai_inpainting(
+            source_img=img,
             target_w=target_w,
             target_h=target_h,
-            prompt_hint=prompt_hint,
+            prompt=prompt_hint,
             vision_info=cached_analysis,
-            allowed_text=allowed_text,
+            bg_color_hex=bg_color_hex,
+            is_transparent=is_transparent,
+            foreground_img=foreground_img,
         )
-
-    # Step 4: Fallback studio background if AI unavailable or text validation triggered fallback
-    if ai_bg is not None:
-        bg_canvas = ai_bg
-        is_gen_ai = True
-        provider = "cloudflare_workers_ai"
-        status = "ready"
+        if cf_img is not None:
+            return cf_img, {
+                "status": "ready",
+                "method": "ai",
+                "provider": "cloudflare_workers_ai",
+                "analysis": cached_analysis,
+                "is_generative_ai": True,
+                "canvas_size": [target_w, target_h],
+                "placed_box": [ox, oy, ox + pw, oy + ph],
+                "product_preserved": True,
+                "foreground_mode": foreground_mode,
+                "foreground_fidelity": "pixel_identical" if foreground_mode == "original" else "ai_enhanced_detail",
+                "foreground_status": "original_approved" if foreground_mode == "original" else "realesrgan_enhanced",
+                "foreground_description": (
+                    "Original customer-approved pixels preserved without alteration."
+                    if foreground_mode == "original"
+                    else "Real-ESRGAN CNN super-resolution enhanced foreground for improved apparent detail. Not claimed to be pixel-identical to source."
+                ),
+                "error_message": None,
+            }
+        else:
+            logger.warning(f"Cloudflare inpainting failed for ({target_w}x{target_h}): {cf_err}")
     else:
-        # High quality studio fallback canvas
-        raw_fallback = studio_texture_background_expansion(
+        cf_err = "Cloudflare credentials not configured"
+
+    # 2. Honest Fallback: if AI generation failed or credentials absent
+    if allow_opencv_fallback:
+        fallback_img = studio_texture_background_expansion(
             img_rgb=img,
             target_w=target_w,
             target_h=target_h,
@@ -540,36 +670,37 @@ def expand_background_groq(
             vision_info=cached_analysis,
             foreground_img=foreground_img,
         )
-        bg_canvas = raw_fallback
-        is_gen_ai = False
-        provider = "studio_fallback"
-        status = "fallback"
+        return fallback_img, {
+            "status": "fallback",
+            "method": "ai",
+            "provider": "studio_fallback",
+            "analysis": cached_analysis,
+            "is_generative_ai": False,
+            "canvas_size": [target_w, target_h],
+            "placed_box": [ox, oy, ox + pw, oy + ph],
+            "product_preserved": True,
+            "foreground_mode": foreground_mode,
+            "foreground_fidelity": "pixel_identical" if foreground_mode == "original" else "ai_enhanced_detail",
+            "foreground_status": "original_approved" if foreground_mode == "original" else "realesrgan_enhanced",
+            "foreground_description": (
+                "Original customer-approved pixels preserved without alteration."
+                if foreground_mode == "original"
+                else "Real-ESRGAN CNN super-resolution enhanced foreground for improved apparent detail. Not claimed to be pixel-identical to source."
+            ),
+            "error_message": f"AI generation unavailable ({cf_err}). Displaying adaptive fallback.",
+        }
 
-    # Step 5: Render natural ground contact shadow and composite protected product
-    shadow = render_natural_ground_shadow(target_w, target_h, ppw, pph, pox, poy)
-    composite = bg_canvas.convert("RGBA")
-    composite.paste(shadow, (0, 0), mask=shadow)
-    composite.paste(placed_cutout, (pox, poy), mask=placed_cutout.split()[-1])
-
-    final_result = composite.convert("RGB")
-
-    meta = {
-        "status": status,
+    # 3. Explicit Failure if fallback not allowed
+    return None, {
+        "status": "failed",
         "method": "ai",
-        "provider": provider,
-        "analysis": cached_analysis,
-        "is_generative_ai": is_gen_ai,
+        "provider": "none",
+        "is_generative_ai": False,
         "canvas_size": [target_w, target_h],
-        "placed_box": [pox, poy, pox + ppw, pph + poy],
-        "product_preserved": True,
-        "text_validated": True,
-        "unwanted_text_detected": False,
-        "segmentation": seg_meta,
-        "foreground_mode": foreground_mode,
-        "error_message": ai_err if status == "fallback" else None,
+        "placed_box": [ox, oy, ox + pw, oy + ph],
+        "product_preserved": False,
+        "error_message": cf_err or "AI background generation failed.",
     }
-
-    return final_result, meta
 
 
 def expand_background_ai(
