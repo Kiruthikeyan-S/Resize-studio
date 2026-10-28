@@ -197,7 +197,7 @@ export const API_BASE =
    window.location.hostname !== 'localhost' &&
    window.location.hostname !== '127.0.0.1' &&
    !window.location.hostname.endsWith('.localhost')
-    ? 'https://resize-studio.onrender.com/api'
+    ? 'https://racemath.site/api'
     : '/api');
 
 export function resolveUrl(url: string | undefined): string {
