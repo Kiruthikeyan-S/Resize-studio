@@ -945,7 +945,8 @@ def generate_comparison_pipeline(
             }
 
         # Process all 5 aspect ratios concurrently in parallel threads (4x-5x faster generation)
-        with ThreadPoolExecutor(max_workers=min(5, len(RATIO_CONFIGS))) as executor:
+        max_workers = min(int(os.environ.get("MAX_COMPARISON_WORKERS", "2")), len(RATIO_CONFIGS))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
             ratio_results = list(executor.map(_process_comparison_ratio, RATIO_CONFIGS.items()))
 
         for item in ratio_results:
