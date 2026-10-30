@@ -314,7 +314,20 @@ def studio_texture_background_expansion(
         canvas_np[:, :] = fill_color
     else:
         # Edge-replicated border canvas (eliminates periodic accordion barcode scanlines completely!)
-        canvas_np = cv2.copyMakeBorder(placed_np, pad_top, pad_bottom, pad_left, pad_right, cv2.BORDER_REPLICATE)
+        # Neutralize outermost 2px border rows/cols before edge replication
+        # If the input image has tiny watermarks or stock codes at the edge (e.g. "...84686"),
+        # this prevents replicating them into the inpainting canvas.
+        placed_np_clean = placed_np.copy()
+        if pad_bottom > 0 and ph > 6:
+            placed_np_clean[-2:, :] = cv2.medianBlur(placed_np[-4:-2, :], 5)
+        if pad_top > 0 and ph > 6:
+            placed_np_clean[:2, :] = cv2.medianBlur(placed_np[2:4, :], 5)
+        if pad_left > 0 and pw > 6:
+            placed_np_clean[:, :2] = cv2.medianBlur(placed_np[:, 2:4], 5)
+        if pad_right > 0 and pw > 6:
+            placed_np_clean[:, -2:] = cv2.medianBlur(placed_np[:, -4:-2], 5)
+
+        canvas_np = cv2.copyMakeBorder(placed_np_clean, pad_top, pad_bottom, pad_left, pad_right, cv2.BORDER_REPLICATE)
 
         # Multi-scale atmospheric diffusion across expansion wings
         kw = max(31, ((pad_left + pad_right) // 3) | 1) if (pad_left + pad_right) > 0 else 31
@@ -498,34 +511,38 @@ def call_cloudflare_workers_ai_inpainting(
         except Exception:
             top_rgb, bot_rgb = (128, 128, 128), (128, 128, 128)
 
-        # Universal negative prompt preventing duplicate objects, equipment, and artifacts
+        # Universal negative prompt heavily weighted with anti-text and anti-watermark tokens at the front
         universal_negative = (
-            "duplicate subject, extra subjects, second animal, second bird, second butterfly, second vehicle, second car, "
-            "tripod, camera equipment, studio lights, softbox, stand, umbrella, lamps, furniture, marble tiles, floor tiles, "
-            "mountains, rocky terrain, unrelated scenery, text, watermark, logo, border, black bars, dark frame, seam, "
-            "split screen, collage, multi-panel, discontinuous composition, distortion"
+            "text, words, letters, numbers, digits, font, typography, writing, watermark, "
+            "signature, stamp, logo, label, brand mark, copyright, serial number, barcode, "
+            "subtitles, caption, quote, headline, advertisement, poster, signage, "
+            "duplicate subject, extra subjects, second person, second shoe, second animal, "
+            "tripod, camera equipment, studio lights, softbox, stand, umbrella, lamps, "
+            "furniture, marble tiles, floor tiles, mountains, rocky terrain, unrelated scenery, "
+            "border, black bars, dark frame, seam, split screen, collage, multi-panel, "
+            "discontinuous composition, distortion, blur artifacts"
         )
 
         if prompt:
-            final_prompt = prompt
+            final_prompt = f"{prompt}, clean background, completely free of text, words, logos or watermarks"
             final_negative = universal_negative
         elif scene_info.get("has_sky") or (top_rgb[2] > top_rgb[0] * 1.05 and top_rgb[2] > 95):
-            final_prompt = "soft natural sky with smooth diffused light clouds, out of focus matching environment, clean seamless empty backdrop, photorealistic"
-            final_negative = "mountains, rocks, trees, ground, hills, landscape, duplicate bird, animal, person, tripod, equipment, text, watermark, split scene, seam"
+            final_prompt = "soft natural sky with smooth diffused light clouds, out of focus matching environment, clean seamless empty backdrop, completely free of text or watermarks, photorealistic"
+            final_negative = "text, words, letters, watermark, logo, numbers, " + universal_negative
         elif top_rgb[1] > top_rgb[0] * 1.04 and top_rgb[1] > top_rgb[2]:
-            final_prompt = "soft blurred natural garden foliage bokeh, delicate warm outdoor morning lighting, seamless macro photography background, photorealistic"
-            final_negative = "duplicate animal, insect, butterfly, flower, text, watermark, mountains, buildings, split frame, seam"
+            final_prompt = "soft blurred natural garden foliage bokeh, delicate warm outdoor morning lighting, seamless macro photography background, clean empty backdrop, completely free of text or watermarks, photorealistic"
+            final_negative = "text, words, letters, watermark, logo, numbers, " + universal_negative
         elif abs(top_rgb[0] - top_rgb[1]) < 18 and abs(top_rgb[1] - top_rgb[2]) < 18 and np.std(top_rgb) < 10.0:
             bw = max(2, min(16, min(pw, ph) // 20))
             perim_std = float(np.std(placed_np[:bw, :, :]))
             if perim_std < 8.0:
-                final_prompt = "seamless clean minimal studio backdrop, soft diffused ambient lighting, empty background, smooth gradient, photorealistic"
-                final_negative = "tripod, camera, stand, softbox, lamp, umbrella, furniture, tiles, duplicate product, text, watermark, logo"
+                final_prompt = "seamless clean minimal studio backdrop, soft diffused ambient lighting, empty background, smooth gradient, completely free of text, words, logos or watermarks, photorealistic"
+                final_negative = "text, words, letters, watermark, logo, numbers, " + universal_negative
             else:
-                final_prompt = "seamless architectural building wall and outdoor ground continuation, soft diffused ambient lighting, clean background, matching environment, photorealistic"
+                final_prompt = "seamless clean outdoor ground and surface continuation, soft diffused ambient lighting, clean background, matching environment, completely free of text, words, logos or watermarks, photorealistic"
                 final_negative = universal_negative
         else:
-            final_prompt = "soft out of focus bokeh backdrop, smooth natural color continuation, diffused lighting, clean empty background, photorealistic"
+            final_prompt = "soft out of focus bokeh backdrop, smooth natural color continuation, diffused lighting, clean empty background, completely free of text, words, logos or watermarks, photorealistic"
             final_negative = universal_negative
 
         buf_i, buf_m = io.BytesIO(), io.BytesIO()
@@ -549,9 +566,37 @@ def call_cloudflare_workers_ai_inpainting(
             return None, f"Cloudflare API returned status {res.status_code}: {res.text[:120]}"
 
         gen_img = Image.open(io.BytesIO(res.content)).convert("RGB")
+        gen_arr = np.array(gen_img)
+
+        # Post-generation RapidOCR safety guard: detect and erase any hallucinated text in the newly generated wings
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+            ocr_engine = RapidOCR()
+            ocr_res, _ = ocr_engine(gen_arr)
+            if ocr_res:
+                text_mask = np.zeros(gen_arr.shape[:2], dtype=np.uint8)
+                found_wing_text = False
+                for item in ocr_res:
+                    if not item or len(item) < 2:
+                        continue
+                    pts = np.array(item[0], dtype=np.int32)
+                    # Check if text box is in outer wings (outside original subject rectangle)
+                    x_min, y_min = np.min(pts[:, 0]), np.min(pts[:, 1])
+                    x_max, y_max = np.max(pts[:, 0]), np.max(pts[:, 1])
+                    is_in_wing = (x_min < ox + 6 or x_max > ox + pw - 6 or y_min < oy + 6 or y_max > oy + ph - 6)
+                    if is_in_wing:
+                        cv2.fillPoly(text_mask, [pts], 255)
+                        found_wing_text = True
+
+                if found_wing_text:
+                    # Dilate mask and inpaint to seamlessly erase unwanted background text
+                    text_mask = cv2.dilate(text_mask, cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9)), iterations=2)
+                    gen_arr = cv2.inpaint(gen_arr, text_mask, inpaintRadius=7, flags=cv2.INPAINT_TELEA)
+                    gen_img = Image.fromarray(gen_arr)
+        except Exception as ocr_err:
+            logger.debug(f"OCR background text cleanup skipped: {ocr_err}")
 
         # Guard: check for blank/black output (e.g. NSFW safety filter or model error)
-        gen_arr = np.array(gen_img)
         if float(np.mean(gen_arr)) < 6.0:
             return None, "Cloudflare API returned blank/black frame (filtered). Falling back to studio expansion."
 
