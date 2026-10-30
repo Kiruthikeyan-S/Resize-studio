@@ -318,13 +318,13 @@ def studio_texture_background_expansion(
         # If the input image has tiny watermarks or stock codes at the edge (e.g. "...84686"),
         # this prevents replicating them into the inpainting canvas.
         placed_np_clean = placed_np.copy()
-        if pad_bottom > 0 and ph > 6:
+        if pad_bottom > 0 and placed_h > 6:
             placed_np_clean[-2:, :] = cv2.medianBlur(placed_np[-4:-2, :], 5)
-        if pad_top > 0 and ph > 6:
+        if pad_top > 0 and placed_h > 6:
             placed_np_clean[:2, :] = cv2.medianBlur(placed_np[2:4, :], 5)
-        if pad_left > 0 and pw > 6:
+        if pad_left > 0 and placed_w > 6:
             placed_np_clean[:, :2] = cv2.medianBlur(placed_np[:, 2:4], 5)
-        if pad_right > 0 and pw > 6:
+        if pad_right > 0 and placed_w > 6:
             placed_np_clean[:, -2:] = cv2.medianBlur(placed_np[:, -4:-2], 5)
 
         canvas_np = cv2.copyMakeBorder(placed_np_clean, pad_top, pad_bottom, pad_left, pad_right, cv2.BORDER_REPLICATE)
