@@ -12,12 +12,17 @@ export const TokenConsumptionCard: React.FC<TokenConsumptionCardProps> = ({
   tokenUsage,
   className = '',
 }) => {
-  const { remaining, totalUsed, lastDeducted, percentRemaining } = useTokenTracker();
+  const { remaining, totalUsed, lastDeducted } = useTokenTracker();
 
   // If tokenUsage is provided from the current generation, use it; otherwise fallback to lastDeducted
   const currentUsed = tokenUsage?.total_tokens || lastDeducted || 0;
   const promptTokens = tokenUsage?.prompt_tokens || Math.round(currentUsed * 0.88);
   const completionTokens = tokenUsage?.completion_tokens || (currentUsed - promptTokens);
+
+  // Guarantee remainder reflects deduction even before custom event completes
+  const displayTotalUsed = Math.max(totalUsed, currentUsed);
+  const displayRemaining = Math.max(0, Math.min(remaining, INITIAL_TOKEN_QUOTA - displayTotalUsed));
+  const displayPercent = Math.max(0, Math.min(100, (displayRemaining / INITIAL_TOKEN_QUOTA) * 100));
 
   return (
     <div className={`p-4 rounded-2xl bg-gradient-to-r from-amber-50/90 via-orange-50/40 to-violet-50/60 border border-amber-200/80 shadow-xs mb-6 ${className}`}>
@@ -63,9 +68,9 @@ export const TokenConsumptionCard: React.FC<TokenConsumptionCardProps> = ({
               <span>Tokens Remainder</span>
             </div>
             <div className="text-sm font-extrabold text-emerald-700 font-mono mt-0.5 flex items-center gap-1">
-              <span>{remaining.toLocaleString()}</span>
+              <span>{displayRemaining.toLocaleString()}</span>
               <span className="text-[10px] font-semibold text-emerald-500 bg-emerald-50 px-1.5 py-0.2 rounded-md border border-emerald-100">
-                {percentRemaining.toFixed(1)}%
+                {displayPercent.toFixed(1)}%
               </span>
             </div>
           </div>
@@ -77,7 +82,7 @@ export const TokenConsumptionCard: React.FC<TokenConsumptionCardProps> = ({
               <span>Total Used</span>
             </div>
             <div className="text-sm font-bold text-slate-800 font-mono mt-0.5">
-              {totalUsed.toLocaleString()}
+              {displayTotalUsed.toLocaleString()}
               <span className="text-[10px] font-normal text-slate-400 ml-1">/ {INITIAL_TOKEN_QUOTA.toLocaleString()}</span>
             </div>
           </div>
@@ -101,7 +106,7 @@ export const TokenConsumptionCard: React.FC<TokenConsumptionCardProps> = ({
           <div className="w-32 bg-amber-200/60 rounded-full h-1.5 overflow-hidden">
             <div
               className="bg-emerald-500 h-full rounded-full transition-all duration-500"
-              style={{ width: `${percentRemaining}%` }}
+              style={{ width: `${displayPercent}%` }}
             />
           </div>
           <span className="text-[11px] font-mono font-semibold text-slate-700">
