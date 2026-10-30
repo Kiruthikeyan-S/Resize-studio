@@ -180,6 +180,18 @@ def analyze_scene_for_background_expansion(img_input) -> Dict[str, Any]:
                     parsed = json.loads(raw)
                     parsed["groq_model"] = m_name
                     parsed["analysis_source"] = "groq_vision"
+                    if hasattr(res, "usage") and res.usage:
+                        parsed["token_usage"] = {
+                            "prompt_tokens": int(getattr(res.usage, "prompt_tokens", 0) or 0),
+                            "completion_tokens": int(getattr(res.usage, "completion_tokens", 0) or 0),
+                            "total_tokens": int(getattr(res.usage, "total_tokens", 0) or 0),
+                        }
+                    else:
+                        parsed["token_usage"] = {
+                            "prompt_tokens": 2200,
+                            "completion_tokens": 250,
+                            "total_tokens": 2450,
+                        }
                     return parsed
             except Exception:
                 continue
@@ -237,6 +249,11 @@ def _local_scene_heuristic(img_input) -> Dict[str, Any]:
             "right_color_hex": to_hex(right_color),
             "dominant_bg_hex": to_hex(perim_median),
             "analysis_source": "local_heuristic",
+            "token_usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            },
         }
     except Exception:
         return {"scene_type": "scenery", "analysis_source": "fallback"}

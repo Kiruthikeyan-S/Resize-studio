@@ -152,6 +152,7 @@ class ConvertComparisonResponse(BaseModel):
     foreground_fidelity: Optional[str] = "pixel_identical"
     rows: List[ComparisonRatioRow]
     outputs: List[OutputRatioItem] = []
+    token_usage: Optional[Dict[str, int]] = None
 
 
 class ConvertResponse(BaseModel):
@@ -163,6 +164,7 @@ class ConvertResponse(BaseModel):
     outputs: List[OutputRatioItem]
     rows: Optional[List[ComparisonRatioRow]] = None
     ai_status: Optional[str] = None
+    token_usage: Optional[Dict[str, int]] = None
 
 
 class AdjustCropRequest(BaseModel):
@@ -246,6 +248,7 @@ async def convert_image(payload: ConvertRequest):
         mode=results["mode"],
         revision=results.get("revision", 0),
         outputs=results["outputs"],
+        token_usage=results.get("token_usage"),
     )
 
 
@@ -301,6 +304,7 @@ async def convert_comparison_endpoint(payload: ConvertComparisonRequest):
         foreground_fidelity=results.get("foreground_fidelity", "pixel_identical"),
         rows=results["rows"],
         outputs=results["standard"]["outputs"],
+        token_usage=results.get("token_usage"),
     )
 
 

@@ -123,6 +123,12 @@ export interface ConvertComparisonSettings {
   sr_scale?: number;
 }
 
+export interface TokenUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+
 export interface ConvertComparisonResponse {
   image_id: string;
   original_filename: string;
@@ -141,6 +147,7 @@ export interface ConvertComparisonResponse {
   foreground_fidelity?: string;
   rows: ComparisonRow[];
   outputs: RatioOutput[];
+  token_usage?: TokenUsage;
 }
 
 export interface ConvertResponse {
@@ -152,6 +159,7 @@ export interface ConvertResponse {
   outputs: RatioOutput[];
   rows?: ComparisonRow[];
   ai_status?: string;
+  token_usage?: TokenUsage;
 }
 
 export const SIZE_KEYS = ['large', 'medium', 'small'] as const;

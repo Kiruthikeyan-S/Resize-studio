@@ -1,5 +1,6 @@
 import React from 'react';
 import { Layers, Home } from 'lucide-react';
+import { TokenBadge } from './TokenBadge';
 
 interface HeaderProps {
   onGoHome?: () => void;
@@ -28,9 +29,10 @@ export const Header: React.FC<HeaderProps> = ({ onGoHome }) => {
           </div>
         </div>
 
-        {/* Right Navigation / Home Screen Option */}
-        {onGoHome && (
-          <div className="flex items-center gap-2">
+        {/* Right Navigation / Token Quota & Home Screen Option */}
+        <div className="flex items-center gap-3">
+          <TokenBadge />
+          {onGoHome && (
             <button
               type="button"
               onClick={onGoHome}
@@ -40,8 +42,8 @@ export const Header: React.FC<HeaderProps> = ({ onGoHome }) => {
               <Home className="w-4 h-4 text-violet-600" />
               <span>Home Screen</span>
             </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </header>
   );

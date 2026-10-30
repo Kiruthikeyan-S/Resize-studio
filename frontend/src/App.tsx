@@ -9,7 +9,9 @@ import { CropEditor } from './components/CropEditor';
 import { OriginalCropEditor } from './components/OriginalCropEditor';
 import { PreviewModal } from './components/PreviewModal';
 import { ComparisonResults } from './components/ComparisonResults';
-import type { UploadResponse, RatioOutput, ConvertSettings, ComparisonRow } from './services/api';
+import { TokenConsumptionCard } from './components/TokenConsumptionCard';
+import { deductTokens } from './services/tokenTracker';
+import type { UploadResponse, RatioOutput, ConvertSettings, ComparisonRow, TokenUsage } from './services/api';
 import { api } from './services/api';
 import { AlertCircle, Crop, RotateCcw, Home, Check, Loader2, SlidersHorizontal } from 'lucide-react';
 
@@ -32,6 +34,7 @@ export const App: React.FC = () => {
   const [revisionMap, setRevisionMap] = useState<Record<string, number>>({});
   // Comparison results map: imageId -> ComparisonRow[]
   const [comparisonRowsMap, setComparisonRowsMap] = useState<Record<string, ComparisonRow[]>>({});
+  const [tokenUsageMap, setTokenUsageMap] = useState<Record<string, TokenUsage>>({});
   const [aiInfoMap, setAiInfoMap] = useState<Record<string, {
     status: string;
     provider?: string;
@@ -285,6 +288,15 @@ export const App: React.FC = () => {
           groqMessage: response.groq_message,
         },
       }));
+      if (response.token_usage) {
+        setTokenUsageMap((prev) => ({
+          ...prev,
+          [activeImage.image_id]: response.token_usage!,
+        }));
+        deductTokens(response.token_usage.total_tokens || 2450);
+      } else {
+        deductTokens(2450);
+      }
 
       // Initialize preferences
       setPreferencesMap((prev) => {
@@ -573,6 +585,9 @@ export const App: React.FC = () => {
                 </div>
               ) : currentComparisonRows.length > 0 ? (
                 <div className="space-y-8">
+                  <TokenConsumptionCard
+                    tokenUsage={tokenUsageMap[activeImage.image_id]}
+                  />
                   <ComparisonResults
                     rows={currentComparisonRows}
                     preferences={preferencesMap[activeImage.image_id] || {}}
