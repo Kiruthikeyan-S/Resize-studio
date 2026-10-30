@@ -54,7 +54,7 @@ export const App: React.FC = () => {
     quality: 90,
     sharpen: false,
     denoise: false,
-    foreground_mode: 'auto',
+    foreground_mode: 'original',
   });
 
   const activeImage = images.find((img) => img.image_id === activeImageId) || images[0] || null;
@@ -269,8 +269,10 @@ export const App: React.FC = () => {
         denoise: settings.denoise,
         allow_opencv_fallback: true,
         standard_fit: settings.standard_fit || 'stretch',
-        foreground_mode: settings.foreground_mode || (settings.enhance_foreground ? 'enhanced' : 'auto'),
-        enhance_foreground: settings.enhance_foreground,
+
+        // Protect original foreground
+        foreground_mode: 'original',
+        enhance_foreground: false,
       });
 
       setComparisonRowsMap((prev) => ({

@@ -110,50 +110,27 @@ export const ConversionSettings: React.FC<ConversionSettingsProps> = ({
           />
         </div>
 
-        {/* Method B Foreground Choice */}
+        {/* Method B Foreground - Original Source Protection */}
         <div className="space-y-1.5">
           <div className="flex justify-between items-center">
             <label className="text-xs font-semibold text-slate-600">
               Method B Foreground
             </label>
-            <span className="text-[10px] text-slate-400 font-normal">Method A untouched</span>
+            <span className="text-[10px] text-emerald-600 font-medium">
+              Protected
+            </span>
           </div>
+
           <div className="flex rounded-xl bg-slate-100 p-1 border border-slate-200">
-            {[
-              { id: 'auto', label: 'Auto' },
-              { id: 'enhanced', label: 'Real-ESRGAN' },
-              { id: 'original', label: 'Original' },
-            ].map(({ id, label }) => {
-              const active = (settings.foreground_mode || (settings.enhance_foreground ? 'enhanced' : 'auto')) === id;
-              return (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() =>
-                    setSettings((prev) => ({
-                      ...prev,
-                      foreground_mode: id as 'auto' | 'original' | 'enhanced',
-                      enhance_foreground: id === 'enhanced',
-                    }))
-                  }
-                  className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
-                    active
-                      ? 'bg-white text-violet-700 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                  title={
-                    id === 'auto'
-                      ? 'Automatically upscales with Real-ESRGAN when source resolution is insufficient for output canvas'
-                      : id === 'original'
-                      ? 'Preserves approved source rectangle without neural super-resolution'
-                      : 'CNN Real-ESRGAN super-resolution for crisper apparent detail'
-                  }
-                >
-                  {label}
-                </button>
-              );
-            })}
+            <div className="flex-1 py-1.5 text-xs font-semibold rounded-lg bg-white text-violet-700 shadow-xs text-center">
+              ✓ Original Source
+            </div>
           </div>
+
+          <p className="text-[10px] text-slate-500 leading-relaxed">
+            AI generates only the surrounding background.
+            Original product, text, logos and graphics are protected.
+          </p>
         </div>
 
         {/* Detail Enhancement / Sharpen */}

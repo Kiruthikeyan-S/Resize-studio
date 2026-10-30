@@ -125,7 +125,7 @@ export const ComparisonCard: React.FC<ComparisonCardProps> = ({
                 )
               ) : (
                 <span className="text-[10px] font-medium px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200 flex items-center gap-1">
-                  <span>✓ 100% Original Source</span>
+                  <span>✓ Original Foreground</span>
                 </span>
               )
             )}

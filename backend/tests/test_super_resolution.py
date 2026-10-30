@@ -116,12 +116,11 @@ def test_original_file_immutability_and_caching():
     hash_raw_before = get_file_sha256(raw_path)
     hash_working_before = get_file_sha256(working_path)
 
-    # Trigger super-resolution enhancement through convert-comparison
+    # Verify convert-comparison maintains 100% bit-for-bit immutability of raw and working files
     conv_res = client.post("/api/convert-comparison", json={
         "image_id": image_id,
         "export_format": "jpeg",
         "quality": 90,
-        "foreground_mode": "enhanced",
     })
     assert conv_res.status_code == 200
 
@@ -132,7 +131,9 @@ def test_original_file_immutability_and_caching():
     assert hash_raw_before == hash_raw_after, "raw.* upload file was mutated!"
     assert hash_working_before == hash_working_after, "working.png source was mutated!"
 
-    # Verify enhanced master was saved separately into cache
+    # Directly verify get_or_create_enhanced_master saves separately to cache without mutating original
+    with Image.open(working_path) as src_im:
+        enh_im, enh_meta = get_or_create_enhanced_master(image_id=image_id, source_img=src_im, version=1, scale=4)
     cache_file = os.path.join(orig_dir, "enhanced_v1_RealESRGAN_x4plus_x4.png")
     assert os.path.exists(cache_file), f"Enhanced master was not cached at {cache_file}"
 
@@ -259,21 +260,20 @@ def test_foreground_choice_fidelity_labeling():
         assert ai["foreground_fidelity"] == "pixel_identical"
         assert "without alteration" in ai.get("foreground_description", "")
 
-    # 2. Test foreground_mode="enhanced"
+    # 2. Test that requesting foreground_mode="enhanced" is strictly guarded to protect original foreground
     res_enh = client.post("/api/convert-comparison", json={
         "image_id": image_id,
         "foreground_mode": "enhanced",
     })
     data_enh = res_enh.json()
-    assert data_enh["foreground_mode"] == "enhanced"
-    assert data_enh["foreground_fidelity"] == "ai_enhanced_detail"
+    assert data_enh["foreground_mode"] == "original"
+    assert data_enh["foreground_fidelity"] == "pixel_identical"
 
     for r in data_enh["rows"]:
         ai = r["ai"]
-        assert ai["foreground_mode"] == "enhanced"
-        assert ai["foreground_fidelity"] == "ai_enhanced_detail"
-        # Never claim enhanced copy is pixel-identical
-        assert "Not claimed to be pixel-identical" in ai.get("foreground_description", "")
+        assert ai["foreground_mode"] == "original"
+        assert ai["foreground_fidelity"] == "pixel_identical"
+        assert "without alteration" in ai.get("foreground_description", "")
 
 
 # -------------------------------------------------------------------------
@@ -439,9 +439,10 @@ def test_automatic_upscaling_decision_for_small_vs_large_sources():
     res_auto = client.post("/api/convert-comparison", json={"image_id": image_id})
     assert res_auto.status_code == 200
     data_auto = res_auto.json()
-    assert data_auto["foreground_mode"] == "enhanced"
+    # Foreground is always protected as original
+    assert data_auto["foreground_mode"] == "original"
     for row in data_auto["rows"]:
-        assert row["ai"]["foreground_mode"] == "enhanced"
+        assert row["ai"]["foreground_mode"] == "original"
 
 
 def test_outer_boundary_seam_blending_preserves_entire_source_rectangle():

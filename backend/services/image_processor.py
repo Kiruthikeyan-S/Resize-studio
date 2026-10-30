@@ -571,7 +571,7 @@ def generate_comparison_pipeline(
     allow_opencv_fallback: bool = False,
     prompt_hint: Optional[str] = None,
     standard_fit: str = "stretch",
-    foreground_mode: str = "auto",
+    foreground_mode: str = "original",
     sr_scale: int = 4,
 ) -> Dict[str, Any]:
     """
@@ -644,33 +644,12 @@ def generate_comparison_pipeline(
         source_img = ensure_srgb_profile(source_img)
         orig_w, orig_h = source_img.size
 
-        # Inspect source resolution vs target canvases to decide if super-resolution is needed
-        from services.super_resolution import get_or_create_enhanced_master, needs_super_resolution
-        ratio_sr_map: Dict[str, bool] = {}
-        for _, r_cfg in RATIO_CONFIGS.items():
-            s_key = r_cfg["safe_key"]
-            if foreground_mode == "enhanced":
-                ratio_sr_map[s_key] = True
-            elif foreground_mode == "original":
-                ratio_sr_map[s_key] = False
-            else:
-                # 'auto' mode: automatically upscale when source resolution is insufficient for placed canvas area
-                ratio_sr_map[s_key] = needs_super_resolution(orig_w, orig_h, r_cfg["width"], r_cfg["height"])
-
+        # METHOD B FOREGROUND PROTECTION
+        # Always use the approved original working image.
+        # Do not apply Real-ESRGAN or fallback super-resolution to the foreground.
+        foreground_mode = "original"
         enhanced_master = None
         sr_meta = None
-        if any(ratio_sr_map.values()):
-            try:
-                version = int(orig_meta.get("version", 1))
-                enhanced_master, sr_meta = get_or_create_enhanced_master(
-                    image_id=image_id,
-                    source_img=source_img,
-                    version=version,
-                    scale=sr_scale,
-                )
-            except Exception as e:
-                logger.warning(f"Super-resolution failed, falling back to original foreground: {e}")
-                sr_meta = {"status": "fallback", "provider": "studio_fallback", "error": str(e)}
 
         def _process_comparison_ratio(item):
             ratio_key, config = item
@@ -785,8 +764,9 @@ def generate_comparison_pipeline(
             # ==========================================
             # 2. METHOD B: GROQ-ASSISTED AI BACKGROUND EXTENSION
             # ==========================================
-            use_sr_for_ratio = ratio_sr_map.get(safe_key, False) and (enhanced_master is not None)
-            ratio_fg_mode = "enhanced" if use_sr_for_ratio else "original"
+            # Never enhance or regenerate the original foreground.
+            use_sr_for_ratio = False
+            ratio_fg_mode = "original"
 
             ai_img, ai_meta = expand_background_groq(
                 img=source_img,
@@ -797,8 +777,8 @@ def generate_comparison_pipeline(
                 bg_color_hex=bg_color_hex,
                 is_transparent=is_transparent,
                 allow_opencv_fallback=allow_opencv_fallback,
-                foreground_img=enhanced_master if use_sr_for_ratio else None,
-                foreground_mode=ratio_fg_mode,
+                foreground_img=None,
+                foreground_mode="original",
             )
 
             ai_status = ai_meta.get("status", "failed")
