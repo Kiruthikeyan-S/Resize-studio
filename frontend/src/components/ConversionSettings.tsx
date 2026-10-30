@@ -110,11 +110,11 @@ export const ConversionSettings: React.FC<ConversionSettingsProps> = ({
           />
         </div>
 
-        {/* Method B Foreground - Original Source Protection */}
+        {/* Mode B Foreground - Original Source Protection */}
         <div className="space-y-1.5">
           <div className="flex justify-between items-center">
             <label className="text-xs font-semibold text-slate-600">
-              Method B Foreground
+              Mode B Foreground
             </label>
             <span className="text-[10px] text-emerald-600 font-medium">
               Protected
@@ -127,10 +127,7 @@ export const ConversionSettings: React.FC<ConversionSettingsProps> = ({
             </div>
           </div>
 
-          <p className="text-[10px] text-slate-500 leading-relaxed">
-            AI generates only the surrounding background.
-            Original product, text, logos and graphics are protected.
-          </p>
+
         </div>
 
         {/* Detail Enhancement / Sharpen */}

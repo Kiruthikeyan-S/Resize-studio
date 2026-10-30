@@ -86,7 +86,7 @@ export const ComparisonCard: React.FC<ComparisonCardProps> = ({
                   : 'bg-slate-200/80 text-slate-700 border border-slate-300'
               }`}
             >
-              {isAI ? 'Method B: AI Enhanced' : 'Method A: Standard'}
+              {isAI ? 'Mode B: AI Enhanced' : 'Mode A: Standard'}
             </span>
 
             {isAI && status === 'unavailable' && (
@@ -133,14 +133,8 @@ export const ComparisonCard: React.FC<ComparisonCardProps> = ({
 
           <p className="text-xs text-slate-500">
             {isAI
-              ? (item.foreground_mode === 'enhanced'
-                  ? 'Maintains natural proportions with Real-ESRGAN super-resolution foreground detail and AI outpainted background.'
-                  : 'Maintains natural proportions; 100% original approved foreground on AI outpainted background.')
-              : item.mode === 'safe_fit'
-              ? 'Safe Fit (contain). 100% original content preserved without distortion.'
-              : item.mode === 'smart_crop'
-              ? 'Smart Cover (crop). Fills canvas with subject-centered crop.'
-              : 'Direct stretch (Lanczos). Preserves 100% of approved pixels.'}
+              ? 'Natural proportions on AI outpainted background.'
+              : 'Preserves 100% of approved pixels.'}
           </p>
           {isAI && item.error_message && (status === 'fallback' || status === 'failed') && (
             <p className="text-[10px] text-amber-800 bg-amber-50/80 px-2 py-1 rounded border border-amber-200/80">
@@ -272,7 +266,7 @@ export const ComparisonCard: React.FC<ComparisonCardProps> = ({
         >
           <Download className="w-3.5 h-3.5" />
           <span>
-            Download {isAI ? 'AI' : 'Standard'} ({SIZE_LABELS[selectedSize]})
+            Download {isAI ? 'Mode B' : 'Mode A'} ({SIZE_LABELS[selectedSize]})
           </span>
         </button>
       </div>

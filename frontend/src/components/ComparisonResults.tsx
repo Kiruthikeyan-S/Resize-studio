@@ -24,7 +24,6 @@ export const ComparisonResults: React.FC<ComparisonResultsProps> = ({
   onPreferenceChange,
   imageId,
   aiStatus,
-  aiProvider,
   aiMessage,
   onOpenPreviewModal,
 }) => {
@@ -44,18 +43,18 @@ export const ComparisonResults: React.FC<ComparisonResultsProps> = ({
             <div className="flex items-center gap-2">
               <SlidersHorizontal className="w-5 h-5 text-violet-600" />
               <h3 className="font-bold text-lg text-slate-900">
-                Standard Resize vs. AI Enhanced Comparison
+                Mode A vs. Mode B Comparison
               </h3>
             </div>
             <p className="text-xs text-slate-500 mt-0.5">
-              Compare both resizing approaches side-by-side for each aspect ratio and choose your preferred version.
+              Compare Mode A (Standard) and Mode B (AI Enhanced) side-by-side for each aspect ratio.
             </p>
           </div>
 
           {/* AI Status Badge */}
           {aiStatus && (
             <div className="flex items-center gap-2 self-start md:self-auto">
-              <span className="text-xs text-slate-500">AI Provider:</span>
+              <span className="text-xs text-slate-500">Status:</span>
               <span
                 className={`text-xs font-semibold px-2.5 py-1 rounded-lg border ${
                   aiStatus === 'ready'
@@ -67,7 +66,7 @@ export const ComparisonResults: React.FC<ComparisonResultsProps> = ({
                     : 'bg-rose-50 text-rose-700 border-rose-200'
                 }`}
               >
-                {aiProvider ? `${aiProvider.toUpperCase()} (${aiStatus})` : aiStatus}
+                {aiStatus === 'ready' ? 'Mode B: Ready' : (aiStatus === 'fallback' ? 'Mode B: Fallback' : 'Mode B: Offline')}
               </span>
             </div>
           )}
@@ -80,9 +79,9 @@ export const ComparisonResults: React.FC<ComparisonResultsProps> = ({
               <Image className="w-4 h-4" />
             </div>
             <div>
-              <h5 className="font-semibold text-slate-900">Method A: Standard Resize (Without AI)</h5>
+              <h5 className="font-semibold text-slate-900">Mode A: Standard Resize</h5>
               <p className="text-slate-600 mt-0.5 leading-relaxed">
-                Uses <strong>Direct Stretch (Lanczos)</strong>. 100% of your approved crop pixels are preserved without padding or secondary cropping. Changing aspect ratios may distort proportions.
+                Direct Stretch (Lanczos). Preserves 100% of approved pixels without alteration.
               </p>
             </div>
           </div>
@@ -92,9 +91,9 @@ export const ComparisonResults: React.FC<ComparisonResultsProps> = ({
               <Cpu className="w-4 h-4" />
             </div>
             <div>
-              <h5 className="font-semibold text-purple-900">Method B: AI Enhanced Resize (With AI)</h5>
+              <h5 className="font-semibold text-purple-900">Mode B: AI Enhanced Resize</h5>
               <p className="text-purple-800 mt-0.5 leading-relaxed">
-                Maintains your product's natural proportions and outpaints matching background. Original cropped pixels are composited onto the final canvas.
+                Maintains natural proportions with AI outpainted background.
               </p>
             </div>
           </div>
@@ -102,7 +101,7 @@ export const ComparisonResults: React.FC<ComparisonResultsProps> = ({
 
         {aiStatus === 'unavailable' && (
           <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-xs">
-            <strong>Notice:</strong> {aiMessage || 'AI provider is unavailable. Configure GROQ_API_KEY in backend/.env to generate AI-enhanced images. Standard resize is fully available.'}
+            <strong>Notice:</strong> {aiMessage || 'AI provider is unavailable. AI provider is temporarily unavailable. Mode A (Standard) is fully available.'}
           </div>
         )}
       </div>

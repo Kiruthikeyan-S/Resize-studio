@@ -37,9 +37,7 @@ export const TokenConsumptionCard: React.FC<TokenConsumptionCardProps> = ({
               <h4 className="text-sm font-bold text-slate-900 tracking-tight">
                 AI Token Consumption & Balance
               </h4>
-              <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100/90 text-amber-800 font-bold border border-amber-200/70">
-                Groq Vision
-              </span>
+
             </div>
             <p className="text-xs text-slate-500 mt-0.5">
               Live token deduction for this image conversion session

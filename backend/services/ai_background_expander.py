@@ -469,82 +469,147 @@ def call_cloudflare_workers_ai_inpainting(
         pad_left, pad_right = ox, max(0, work_w - (ox + pw))
         pad_top, pad_bottom = oy, max(0, work_h - (oy + ph))
 
-        # 3. Canvas setup: pre-fill outer wings with edge-replication and atmospheric diffusion.
-        # Diffusing the outer wings removes sharp subject edge fragments (like butterfly wing tips or car wheels),
-        # so the inpainting model sees clean ambient color and lighting rather than an object to duplicate.
-        canvas_np = cv2.copyMakeBorder(placed_np, pad_top, pad_bottom, pad_left, pad_right, cv2.BORDER_REPLICATE)
-        kw = max(31, ((pad_left + pad_right) // 3) | 1) if (pad_left + pad_right) > 0 else 31
-        kh = max(31, ((pad_top + pad_bottom) // 3) | 1) if (pad_top + pad_bottom) > 0 else 31
-        diffused = cv2.GaussianBlur(canvas_np, (kw, kh), 0)
+        # Extract scene information for accurate prompt, negative prompt, and canvas pre-filling
+        scene_info = vision_info or _local_scene_heuristic(source_img)
+
+        # Sample background colors from four corners of placed_src (corners avoid foreground subjects)
+        c_size = max(4, min(32, min(pw, ph) // 8))
+        tl = np.median(placed_np[:c_size, :c_size], axis=(0, 1)).astype(np.float32)
+        tr = np.median(placed_np[:c_size, -c_size:], axis=(0, 1)).astype(np.float32)
+        bl = np.median(placed_np[-c_size:, :c_size], axis=(0, 1)).astype(np.float32)
+        br = np.median(placed_np[-c_size:, -c_size:], axis=(0, 1)).astype(np.float32)
+
+        def parse_hex_color(h_str, fallback):
+            if isinstance(h_str, str):
+                c = h_str.strip().lstrip("#")
+                if len(c) == 6:
+                    try:
+                        return np.array([int(c[i:i+2], 16) for i in (0, 2, 4)], dtype=np.float32)
+                    except Exception:
+                        pass
+            return fallback
+
+        top_rgb = parse_hex_color(scene_info.get("top_color_hex"), (tl + tr) * 0.5)
+        bot_rgb = parse_hex_color(scene_info.get("bottom_color_hex"), (bl + br) * 0.5)
+        dom_rgb = parse_hex_color(scene_info.get("dominant_bg_hex"), (top_rgb + bot_rgb) * 0.5)
+
+        # 3. Canvas setup: Pre-fill extended canvas with clean ambient background tone / lighting gradient.
+        # This completely prevents smearing sliced subject pieces (e.g. shoe soles, laces, t-shirt graphics)
+        # into outer wings, stopping the inpainting model from hallucinating duplicate shoes or extra cars!
+        yy = np.linspace(0.0, 1.0, work_h, dtype=np.float32)[:, None, None]
+        xx = np.linspace(0.0, 1.0, work_w, dtype=np.float32)[None, :, None]
+        top_row = (1.0 - xx) * tl + xx * tr
+        bot_row = (1.0 - xx) * bl + xx * br
+        ambient_canvas = (1.0 - yy) * top_row + yy * bot_row
+        canvas_np = np.clip(ambient_canvas, 0, 255).astype(np.uint8)
+
+        # Place the subject image at its target coordinates
+        canvas_np[oy : oy + ph, ox : ox + pw] = placed_np
+
+        # Soft 10px boundary blend outside the placed image so inpainting has a smooth boundary
+        blend_span = 10
+        if pad_left > 0:
+            span = min(blend_span, pad_left)
+            left_col = placed_np[:, 0, :].astype(np.float32)
+            for d in range(1, span + 1):
+                w_blend = 0.5 * (1.0 + np.cos(np.pi * d / (span + 1)))
+                x = ox - d
+                canvas_np[oy : oy + ph, x, :] = np.clip(
+                    w_blend * left_col + (1.0 - w_blend) * canvas_np[oy : oy + ph, x, :].astype(np.float32), 0, 255
+                ).astype(np.uint8)
+
+        if pad_right > 0:
+            span = min(blend_span, pad_right)
+            right_col = placed_np[:, -1, :].astype(np.float32)
+            for d in range(1, span + 1):
+                w_blend = 0.5 * (1.0 + np.cos(np.pi * d / (span + 1)))
+                x = ox + pw - 1 + d
+                canvas_np[oy : oy + ph, x, :] = np.clip(
+                    w_blend * right_col + (1.0 - w_blend) * canvas_np[oy : oy + ph, x, :].astype(np.float32), 0, 255
+                ).astype(np.uint8)
 
         if pad_top > 0:
-            canvas_np[:pad_top, :] = diffused[:pad_top, :]
+            span = min(blend_span, pad_top)
+            top_row_pix = placed_np[0, :, :].astype(np.float32)
+            for d in range(1, span + 1):
+                w_blend = 0.5 * (1.0 + np.cos(np.pi * d / (span + 1)))
+                y = oy - d
+                canvas_np[y, ox : ox + pw, :] = np.clip(
+                    w_blend * top_row_pix + (1.0 - w_blend) * canvas_np[y, ox : ox + pw, :].astype(np.float32), 0, 255
+                ).astype(np.uint8)
+
         if pad_bottom > 0:
-            canvas_np[work_h - pad_bottom:, :] = diffused[work_h - pad_bottom:, :]
-        if pad_left > 0:
-            canvas_np[:, :pad_left] = diffused[:, :pad_left]
-        if pad_right > 0:
-            canvas_np[:, work_w - pad_right:] = diffused[:, work_w - pad_right:]
+            span = min(blend_span, pad_bottom)
+            bot_row_pix = placed_np[-1, :, :].astype(np.float32)
+            for d in range(1, span + 1):
+                w_blend = 0.5 * (1.0 + np.cos(np.pi * d / (span + 1)))
+                y = oy + ph - 1 + d
+                canvas_np[y, ox : ox + pw, :] = np.clip(
+                    w_blend * bot_row_pix + (1.0 - w_blend) * canvas_np[y, ox : ox + pw, :].astype(np.float32), 0, 255
+                ).astype(np.uint8)
 
         canvas = Image.fromarray(canvas_np)
 
         # 4. Inpainting mask: 255 (generate) on the extended canvas, 0 (protect) on original subject
-        # Include a 4px transition overlap so the inpainting boundary merges seamlessly
+        # Include a 6px transition overlap so the inpainting boundary merges seamlessly
         mask_np = np.zeros((work_h, work_w), dtype=np.uint8)
+        seam_overlap = 6
         if pad_top > 0:
-            mask_np[:pad_top + 4, :] = 255
+            mask_np[:pad_top + seam_overlap, :] = 255
         if pad_bottom > 0:
-            mask_np[work_h - pad_bottom - 4:, :] = 255
+            mask_np[work_h - pad_bottom - seam_overlap:, :] = 255
         if pad_left > 0:
-            mask_np[:, :pad_left + 4] = 255
+            mask_np[:, :pad_left + seam_overlap] = 255
         if pad_right > 0:
-            mask_np[:, work_w - pad_right - 4:] = 255
+            mask_np[:, work_w - pad_right - seam_overlap:] = 255
         mask = Image.fromarray(mask_np)
 
-        # 5. Extract scene information for accurate prompt and negative prompt
-        scene_info = vision_info or _local_scene_heuristic(source_img)
-        top_hex = scene_info.get("top_color_hex", "#808080").lstrip("#")
-        bot_hex = scene_info.get("bottom_color_hex", "#808080").lstrip("#")
-        try:
-            top_rgb = tuple(int(top_hex[i:i+2], 16) for i in (0, 2, 4))
-            bot_rgb = tuple(int(bot_hex[i:i+2], 16) for i in (0, 2, 4))
-        except Exception:
-            top_rgb, bot_rgb = (128, 128, 128), (128, 128, 128)
+        # 5. Extract scene information and construct prompt and negative prompt
+        subject_desc = str(scene_info.get("subject_description", "")).strip()
+        scene_type = str(scene_info.get("scene_type", "scenery")).strip()
+        ext_advice = str(scene_info.get("extension_advice", "")).strip()
+        has_sky = bool(scene_info.get("has_sky"))
+        has_ground = bool(scene_info.get("has_ground_or_water"))
 
-        # Universal negative prompt heavily weighted with anti-text and anti-watermark tokens at the front
+        # Negative prompt: Front-loaded with strict anti-text, anti-watermark, and anti-duplicate-subject tokens
         universal_negative = (
             "text, words, letters, numbers, digits, font, typography, writing, watermark, "
             "signature, stamp, logo, label, brand mark, copyright, serial number, barcode, "
             "subtitles, caption, quote, headline, advertisement, poster, signage, "
-            "duplicate subject, extra subjects, second person, second shoe, second animal, "
-            "tripod, camera equipment, studio lights, softbox, stand, umbrella, lamps, "
-            "furniture, marble tiles, floor tiles, mountains, rocky terrain, unrelated scenery, "
-            "border, black bars, dark frame, seam, split screen, collage, multi-panel, "
-            "discontinuous composition, distortion, blur artifacts"
+            "duplicate subject, extra subjects, multiple subjects, second object, duplicate product, "
+            "duplicate shoes, extra shoe, 3rd shoe, multiple shoes, extra sneakers, footwear, feet, legs, socks, toes, laces, shoe box, "
+            "car, vehicle, automobile, miniature car, driving car, wheels, tires, sports car, racing car, "
+            "duplicate person, extra person, second person, human, face, hands, arms, body parts, limbs, extra clothing, "
+            "mountains, rocky terrain, unrelated scenery, landscape, trees, buildings, "
+            "tripod, camera equipment, studio lights, softbox, stand, umbrella, lamps, furniture, "
+            "border, black bars, dark frame, seam, split screen, collage, multi-panel, distortion, blur artifacts, messy"
         )
 
         if prompt:
-            final_prompt = f"{prompt}, clean background, completely free of text, words, logos or watermarks"
+            final_prompt = f"{prompt}, seamless clean matching background continuation, empty backdrop, completely free of text, words, logos or extra objects, commercial photography, 8k"
             final_negative = universal_negative
-        elif scene_info.get("has_sky") or (top_rgb[2] > top_rgb[0] * 1.05 and top_rgb[2] > 95):
-            final_prompt = "soft natural sky with smooth diffused light clouds, out of focus matching environment, clean seamless empty backdrop, completely free of text or watermarks, photorealistic"
-            final_negative = "text, words, letters, watermark, logo, numbers, " + universal_negative
-        elif top_rgb[1] > top_rgb[0] * 1.04 and top_rgb[1] > top_rgb[2]:
-            final_prompt = "soft blurred natural garden foliage bokeh, delicate warm outdoor morning lighting, seamless macro photography background, clean empty backdrop, completely free of text or watermarks, photorealistic"
-            final_negative = "text, words, letters, watermark, logo, numbers, " + universal_negative
-        elif abs(top_rgb[0] - top_rgb[1]) < 18 and abs(top_rgb[1] - top_rgb[2]) < 18 and np.std(top_rgb) < 10.0:
-            bw = max(2, min(16, min(pw, ph) // 20))
-            perim_std = float(np.std(placed_np[:bw, :, :]))
-            if perim_std < 8.0:
-                final_prompt = "seamless clean minimal studio backdrop, soft diffused ambient lighting, empty background, smooth gradient, completely free of text, words, logos or watermarks, photorealistic"
-                final_negative = "text, words, letters, watermark, logo, numbers, " + universal_negative
-            else:
-                final_prompt = "seamless clean outdoor ground and surface continuation, soft diffused ambient lighting, clean background, matching environment, completely free of text, words, logos or watermarks, photorealistic"
-                final_negative = universal_negative
         else:
-            final_prompt = "soft out of focus bokeh backdrop, smooth natural color continuation, diffused lighting, clean empty background, completely free of text, words, logos or watermarks, photorealistic"
-            final_negative = universal_negative
+            if scene_type in ["studio_solid", "studio_gradient"] or np.std(top_rgb) < 14.0:
+                env_prompt = "seamless clean minimal studio backdrop, smooth empty studio wall and surface, soft diffused ambient lighting, empty background"
+            elif has_sky or (top_rgb[2] > top_rgb[0] * 1.05 and top_rgb[2] > 95):
+                env_prompt = "soft natural sky with smooth diffused light clouds, out of focus matching environment, clean seamless empty backdrop, soft ambient lighting"
+            elif top_rgb[1] > top_rgb[0] * 1.04 and top_rgb[1] > top_rgb[2]:
+                env_prompt = "soft blurred natural garden foliage bokeh, delicate warm outdoor morning lighting, seamless clean empty backdrop"
+            elif has_ground:
+                env_prompt = "matching ground surface and clean blurred background environment, smooth natural surface continuation, soft natural lighting, empty space"
+            else:
+                env_prompt = "soft out of focus bokeh backdrop, smooth natural color continuation, diffused lighting, clean empty background"
 
+            clean_advice = ext_advice
+            if any(forbidden in clean_advice.lower() for forbidden in ["car", "vehicle", "shoe", "text", "draw", "person"]):
+                clean_advice = ""
+
+            if clean_advice and len(clean_advice) > 5:
+                final_prompt = f"{env_prompt}, {clean_advice}, empty background, no extra objects, completely free of text or watermarks, commercial photography, photorealistic"
+            else:
+                final_prompt = f"{env_prompt}, clean seamless continuation, empty background, no extra objects, completely free of text or watermarks, commercial photography, photorealistic"
+
+            final_negative = universal_negative
         buf_i, buf_m = io.BytesIO(), io.BytesIO()
         canvas.save(buf_i, format="PNG")
         mask.save(buf_m, format="PNG")
@@ -583,7 +648,12 @@ def call_cloudflare_workers_ai_inpainting(
                     # Check if text box is in outer wings (outside original subject rectangle)
                     x_min, y_min = np.min(pts[:, 0]), np.min(pts[:, 1])
                     x_max, y_max = np.max(pts[:, 0]), np.max(pts[:, 1])
-                    is_in_wing = (x_min < ox + 6 or x_max > ox + pw - 6 or y_min < oy + 6 or y_max > oy + ph - 6)
+                    is_in_wing = (
+                        (pad_left > 0 and x_min < ox + 12) or
+                        (pad_right > 0 and x_max > ox + pw - 12) or
+                        (pad_top > 0 and y_min < oy + 12) or
+                        (pad_bottom > 0 and y_max > oy + ph - 12)
+                    )
                     if is_in_wing:
                         cv2.fillPoly(text_mask, [pts], 255)
                         found_wing_text = True

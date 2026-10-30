@@ -209,7 +209,7 @@ export const DownloadAll: React.FC<DownloadAllProps> = ({
             <h4 className="font-semibold text-sm text-slate-900">Choose Images to Download</h4>
             <p className="text-xs text-slate-500">
               {isComparison
-                ? 'Select any combination of Standard (Without AI) and AI Enhanced sizes.'
+                ? 'Select any combination of Mode A and Mode B sizes.'
                 : `Pick any combination of the ${allIds.length} generated sizes.`}
             </p>
           </div>
@@ -233,7 +233,7 @@ export const DownloadAll: React.FC<DownloadAllProps> = ({
                 onClick={selectAllStandard}
                 className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 cursor-pointer"
               >
-                All Standard (15)
+                All Mode A (15)
               </button>
               <button
                 type="button"
@@ -249,9 +249,9 @@ export const DownloadAll: React.FC<DownloadAllProps> = ({
                   });
                   setSelected(next);
                 }}
-                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 cursor-pointer"
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 cursor-pointer"
               >
-                All Groq (15)
+                All Mode B (15)
               </button>
             </>
           )}
@@ -283,7 +283,7 @@ export const DownloadAll: React.FC<DownloadAllProps> = ({
           <thead className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200">
             <tr>
               <th className="px-4 py-2.5">Ratio</th>
-              {isComparison && <th className="px-4 py-2.5">Method</th>}
+              {isComparison && <th className="px-4 py-2.5">Mode</th>}
               {SIZE_KEYS.map((s) => (
                 <th key={s} className="px-4 py-2.5">
                   {SIZE_HEADERS[s]}
@@ -344,11 +344,11 @@ export const DownloadAll: React.FC<DownloadAllProps> = ({
                         <span
                           className={`text-[11px] font-semibold px-2 py-0.5 rounded-md border ${
                             method === 'ai'
-                              ? 'bg-sky-50 text-sky-700 border-sky-200'
+                              ? 'bg-purple-50 text-purple-700 border-purple-200'
                               : 'bg-slate-100 text-slate-700 border-slate-200'
                           }`}
                         >
-                          {method === 'ai' ? 'Groq-Assisted' : 'Standard'}
+                          {method === 'ai' ? 'Mode B' : 'Mode A'}
                         </span>
                       </td>
 

@@ -52,7 +52,7 @@ export const ComparisonRow: React.FC<ComparisonRowProps> = ({
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            Standard (No AI)
+            Mode A
           </button>
           <button
             type="button"
@@ -64,7 +64,7 @@ export const ComparisonRow: React.FC<ComparisonRowProps> = ({
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            AI Enhanced
+            Mode B
           </button>
         </div>
       </div>
