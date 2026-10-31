@@ -936,6 +936,12 @@ def generate_comparison_pipeline(
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             ratio_results = list(executor.map(_process_comparison_ratio, RATIO_CONFIGS.items()))
 
+        try:
+            from services.usage_tracker import usage_tracker
+            usage_tracker.record_ratios_generated(len(ratio_results))
+        except Exception:
+            pass
+
         for item in ratio_results:
             standard_outputs.append(item["std_output"])
             groq_outputs.append(item["groq_output"])

@@ -1,5 +1,6 @@
 import React from 'react';
-import { Layers, Home } from 'lucide-react';
+import { Layers, Home, Activity } from 'lucide-react';
+import { UsageDashboardModal } from './UsageDashboardModal';
 import { TokenBadge } from './TokenBadge';
 
 interface HeaderProps {
@@ -7,6 +8,7 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({ onGoHome }) => {
+  const [showUsageModal, setShowUsageModal] = React.useState(false);
   return (
     <header className="w-full bg-white border-b border-slate-200 sticky top-0 z-40 shadow-xs">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
@@ -32,6 +34,17 @@ export const Header: React.FC<HeaderProps> = ({ onGoHome }) => {
         {/* Right Navigation / Token Quota & Home Screen Option */}
         <div className="flex items-center gap-3">
           <TokenBadge />
+          <button
+            type="button"
+            onClick={() => setShowUsageModal(true)}
+            className="py-1.5 px-3 rounded-xl border border-orange-200 hover:border-orange-300 bg-orange-50 hover:bg-orange-100/80 text-orange-800 text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer shadow-2xs"
+            title="View Cloudflare Workers AI Usage & Diagnostics"
+          >
+            <Activity className="w-3.5 h-3.5 text-orange-600" />
+            <span className="hidden sm:inline">AI Usage</span>
+            <span className="sm:hidden">AI</span>
+          </button>
+
           {onGoHome && (
             <button
               type="button"
@@ -45,6 +58,10 @@ export const Header: React.FC<HeaderProps> = ({ onGoHome }) => {
           )}
         </div>
       </div>
+      <UsageDashboardModal
+        isOpen={showUsageModal}
+        onClose={() => setShowUsageModal(false)}
+      />
     </header>
   );
 };

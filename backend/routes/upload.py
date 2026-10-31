@@ -98,6 +98,13 @@ async def _process_single_upload(file: UploadFile) -> UploadResponse:
     except Exception:
         raise HTTPException(status_code=422, detail="Corrupted or invalid image file.")
 
+    # Record upload for observability
+    try:
+        from services.usage_tracker import usage_tracker
+        usage_tracker.record_upload()
+    except Exception:
+        pass
+
     # Save original untouched and create working copy
     file_path, meta = save_original_image(
         image_id=image_id,

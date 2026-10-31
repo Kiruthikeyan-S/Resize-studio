@@ -38,6 +38,7 @@ try:
 except Exception:
     pass
 
+from services.usage_tracker import usage_tracker
 from services.groq_vision import (
     analyze_scene_for_background_expansion,
     is_groq_enabled,
@@ -626,9 +627,41 @@ def call_cloudflare_workers_ai_inpainting(
             "height": work_h,
         }
 
+        # TASK 1: Log Cloudflare API request start with metadata
+        start_time = time.time()
+        start_iso = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+        logger.info(
+            f"[CLOUDFLARE_REQUEST_START] Model: {model_name} | "
+            f"Target: {target_w}x{target_h} | Working Canvas: {work_w}x{work_h} | "
+            f"Timestamp: {start_iso}"
+        )
+
         res = requests.post(url, headers=headers, json=payload, timeout=35.0)
+        duration_ms = round((time.time() - start_time) * 1000, 2)
+        ray_id = res.headers.get("cf-ray", "N/A")
+        content_type = res.headers.get("content-type", "N/A")
+        res_size = len(res.content)
+        neurons_hdr = res.headers.get("cf-ai-neurons", "N/A")
+
         if res.status_code != 200:
-            return None, f"Cloudflare API returned status {res.status_code}: {res.text[:120]}"
+            err_msg = f"Cloudflare API returned status {res.status_code}: {res.text[:120]}"
+            logger.error(
+                f"[CLOUDFLARE_FAILED] Status: {res.status_code} | Duration: {duration_ms}ms | "
+                f"CF-Ray: {ray_id} | Ratio: {target_w}x{target_h} | Detail: {err_msg}"
+            )
+            usage_tracker.record_cloudflare_result(
+                success=False,
+                status_code=res.status_code,
+                duration_ms=duration_ms,
+                ray_id=ray_id,
+                content_type=content_type,
+                response_size=res_size,
+                neurons_header=neurons_hdr,
+                target_w=target_w,
+                target_h=target_h,
+                error_msg=err_msg
+            )
+            return None, err_msg
 
         gen_img = Image.open(io.BytesIO(res.content)).convert("RGB")
         gen_arr = np.array(gen_img)
@@ -668,7 +701,43 @@ def call_cloudflare_workers_ai_inpainting(
 
         # Guard: check for blank/black output (e.g. NSFW safety filter or model error)
         if float(np.mean(gen_arr)) < 6.0:
-            return None, "Cloudflare API returned blank/black frame (filtered). Falling back to studio expansion."
+            err_msg = "Cloudflare API returned blank/black frame (filtered). Falling back to studio expansion."
+            logger.warning(
+                f"[CLOUDFLARE_FAILED] Filtered / Blank Frame | Duration: {duration_ms}ms | "
+                f"CF-Ray: {ray_id} | Ratio: {target_w}x{target_h}"
+            )
+            usage_tracker.record_cloudflare_result(
+                success=False,
+                status_code=res.status_code,
+                duration_ms=duration_ms,
+                ray_id=ray_id,
+                content_type=content_type,
+                response_size=res_size,
+                neurons_header=neurons_hdr,
+                target_w=target_w,
+                target_h=target_h,
+                error_msg=err_msg
+            )
+            return None, err_msg
+
+        # TASK 1: Log Cloudflare API successful generation and record metrics
+        logger.info(
+            f"[CLOUDFLARE_SUCCESS] Status: {res.status_code} | Duration: {duration_ms}ms | "
+            f"CF-Ray: {ray_id} | Content-Type: {content_type} | Size: {res_size} bytes | "
+            f"cf-ai-neurons: {neurons_hdr} | Ratio: {target_w}x{target_h}"
+        )
+        usage_tracker.record_cloudflare_result(
+            success=True,
+            status_code=res.status_code,
+            duration_ms=duration_ms,
+            ray_id=ray_id,
+            content_type=content_type,
+            response_size=res_size,
+            neurons_header=neurons_hdr,
+            target_w=target_w,
+            target_h=target_h,
+            error_msg=None
+        )
 
         # 6. Scale generated background to final target dimensions
         final_bg = gen_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
@@ -687,7 +756,25 @@ def call_cloudflare_workers_ai_inpainting(
         return final_img, None
 
     except Exception as e:
-        return None, f"Cloudflare inpainting error: {str(e)[:120]}"
+        duration_ms = round((time.time() - start_time) * 1000, 2) if 'start_time' in locals() else 0.0
+        err_msg = f"Cloudflare inpainting error: {str(e)[:120]}"
+        logger.error(
+            f"[CLOUDFLARE_FAILED] Exception: {str(e)} | Duration: {duration_ms}ms | "
+            f"Ratio: {target_w}x{target_h}"
+        )
+        usage_tracker.record_cloudflare_result(
+            success=False,
+            status_code=500,
+            duration_ms=duration_ms,
+            ray_id="N/A",
+            content_type="N/A",
+            response_size=0,
+            neurons_header="N/A",
+            target_w=target_w,
+            target_h=target_h,
+            error_msg=err_msg
+        )
+        return None, err_msg
 def expand_background_groq(
     img: Image.Image,
     target_w: int,
@@ -771,6 +858,17 @@ def expand_background_groq(
 
     # 2. Honest Fallback: if AI generation failed or credentials absent
     if allow_opencv_fallback:
+        fallback_reason = cf_err or "Cloudflare inpainting unavailable"
+        logger.info(
+            f"[LOCAL_FALLBACK_USED] Ratio: {target_w}x{target_h} ({ext_type}) | "
+            f"Reason: {fallback_reason} | Placed: {pw}x{ph}"
+        )
+        usage_tracker.record_fallback_used(
+            target_w=target_w,
+            target_h=target_h,
+            reason=fallback_reason,
+            failed_status_or_exception=cf_err
+        )
         fallback_img = studio_texture_background_expansion(
             img_rgb=img,
             target_w=target_w,

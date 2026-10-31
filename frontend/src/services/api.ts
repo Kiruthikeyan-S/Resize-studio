@@ -238,7 +238,44 @@ function normalizeRatioOutput(out: RatioOutput): RatioOutput {
   };
 }
 
+export interface UsageEvent {
+  timestamp: string;
+  type: 'CLOUDFLARE_SUCCESS' | 'CLOUDFLARE_FAILED' | 'LOCAL_FALLBACK_USED';
+  ratio?: string;
+  duration_ms?: number;
+  cf_ray?: string;
+  content_type?: string;
+  response_size?: number;
+  status_code?: number;
+  neurons?: string;
+  reason?: string;
+  detail?: string;
+}
+
+export interface UsageStats {
+  total_uploads: number;
+  total_ratios_generated: number;
+  cloudflare_requests: number;
+  successful_cloudflare_requests: number;
+  failed_cloudflare_requests: number;
+  local_fallback_executions: number;
+  average_response_time_ms: number;
+  actual_neurons_status: {
+    status: string;
+    verified_neurons_per_request: number | null;
+    model_pricing_tier: string;
+    unit_cost_usd: string;
+    message: string;
+  };
+  recent_events: UsageEvent[];
+}
+
 export const api = {
+  async getUsageStats(): Promise<UsageStats> {
+    const response = await axios.get<UsageStats>(`${API_BASE}/usage-stats`);
+    return response.data;
+  },
+
   async uploadImage(file: File): Promise<UploadResponse> {
     const formData = new FormData();
     formData.append('file', file);

@@ -26,6 +26,7 @@ from services.image_processor import (
 )
 from services.crop_engine import RATIO_CONFIGS, resolve_ratio_config
 from services.groq_vision import analyze_image_with_groq, is_groq_enabled
+from services.usage_tracker import usage_tracker
 
 router = APIRouter(tags=["convert"])
 
@@ -469,3 +470,12 @@ async def delete_image_session(image_id: str):
     if not success:
         raise HTTPException(status_code=404, detail="Session not found or already deleted.")
     return {"status": "success", "message": f"Session {image_id} deleted."}
+
+
+@router.get("/usage-stats")
+async def get_usage_statistics():
+    """
+    Return usage tracking metrics for Cloudflare Workers AI requests,
+    success/failure counts, local fallbacks, response times, and verified neurons status.
+    """
+    return usage_tracker.get_stats()

@@ -35,6 +35,7 @@ backend/models/
 # Runtime Storage & Uploads
 backend/storage/original/
 backend/storage/generated/
+backend/storage/*.json
 storage/original/
 storage/generated/
 backend/generated_background.*
